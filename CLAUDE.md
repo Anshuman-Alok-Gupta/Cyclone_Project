@@ -20,14 +20,23 @@ This is Project 1 of 3, leading to benchmarking AI weather models (GraphCast, Pa
 - `data/raw` and `data/processed` are git-ignored. Re-download them rather than committing them.
 
 ## Data decisions
-- Use 6-hourly synoptic times only (00/06/12/18 UTC). Drop interpolated rows:
-  - drop the off-synoptic rows (03/09/15/21 UTC and other odd times), AND
-  - drop synoptic-hour rows that `IFLAG` marks as interpolated (about 5% of NI synoptic rows since 1980).
-- Keep storms from 1980 onward.
-- Track types: keep `TRACK_TYPE == "main"` only. Drop provisional (`PROVISIONAL`, `US-PROVISIONAL`) and spur (`spur-*`) tracks.
-- For the NI dataset, keep only the NI-basin portion of each storm (`BASIN == "NI"`).
-- Wind source: JTWC (`USA_WIND`), because the WP pretraining file has no IMD winds (`NEWDELHI_WIND` is 0% filled for WP-basin rows).
-  Never mix in `NEWDELHI_WIND` or `WMO_WIND`. IMD reports 3-minute winds and JTWC 1-minute winds, so they aren't comparable.
+- **Reference track source: JTWC throughout.** Positions from `USA_LAT`/`USA_LON`, winds from `USA_WIND`.
+  Never use the combined `LAT`/`LON` (it blends agencies) or any `NEWDELHI_*`/`WMO_*` positions or winds for training or scoring.
+  - Why JTWC: the WP pretraining file has no IMD data (`NEWDELHI_WIND` is 0% filled for WP-basin rows), and taking
+    positions and winds from one agency keeps them consistent. IMD reports 3-minute winds and JTWC 1-minute winds, so they aren't comparable.
+- **Interpolation flag:** keep only rows where `IFLAG` character 1 (index 0) == `"O"`, i.e. an original JTWC fix.
+  - Character 1 is the USA/JTWC flag: it is `"_"` exactly when `USA_LAT` is missing (100% match in the NI file). Character 6 is IMD.
+  - `"P"`/`"I"` rows have `USA_LAT` filled with interpolated values, so `USA_LAT` being present does NOT mean it's an original fix.
+- **Row filters for the NI dataset, applied in this order:**
+  1. `TRACK_TYPE == "main"`: drops provisional and spur tracks
+  2. `BASIN == "NI"`: keeps only the NI-basin portion of each storm
+  3. synoptic hours only: 00/06/12/18 UTC (minute 00)
+  4. `SEASON` 1980–2024
+  5. `USA_LAT` present and `IFLAG[0] == "O"`
+- **Expected result:** 5,694 rows, 258 storms (by split: train 184, validate 27, test 47). These were verified against v04r01 on 2026-11-04.
+  If the cleaning code gets different numbers, stop and report why before continuing.
+- **Known limitation:** where both exist, JTWC and IMD positions differ by a median of ~51 km (p90 ~133 km).
+  Keep JTWC as the reference everywhere. In Project 3, also report scores against IMD tracks as a sensitivity check.
 
 ## Evaluation
 - Split by year (`SEASON`), never randomly:
