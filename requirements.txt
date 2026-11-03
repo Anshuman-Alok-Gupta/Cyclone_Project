@@ -1,0 +1,11 @@
+# Direct dependencies only, with loose minimum versions, so this installs cleanly
+# on Colab/Kaggle without fighting their preinstalled packages.
+# Not listed on purpose: torch (Colab/Kaggle ship CUDA torch) and jupyter (Colab has it).
+# Exact local versions are in requirements-lock-windows.txt.
+numpy>=2.0
+pandas>=2.2.2
+matplotlib>=3.9
+cartopy>=0.24
+scikit-learn>=1.5
+xgboost>=2.1
+tqdm>=4.66

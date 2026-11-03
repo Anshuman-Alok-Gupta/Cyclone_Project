@@ -1,0 +1,10 @@
+# Virtual environment
+.venv/
+
+# Data (re-downloadable from NOAA NCEI; see CLAUDE.md)
+data/raw/
+data/processed/
+
+# Python / Jupyter caches
+__pycache__/
+.ipynb_checkpoints/
