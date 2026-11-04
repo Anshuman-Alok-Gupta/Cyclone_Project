@@ -523,13 +523,15 @@ def fit_final(
     truth: pd.DataFrame,
     settings: dict,
     device: str,
-) -> dict[tuple[int, str], xgb.XGBRegressor]:
-    """Refit chosen settings on every development season, for the end of Project 1.
+) -> dict[int, dict[tuple[int, str], xgb.XGBRegressor]]:
+    """Refit chosen settings with every seed, on every development season.
 
     Cross-validation's models each saw four blocks, and their job was to measure the
     settings. Once the settings are chosen, using all five blocks gives the final model
     more storms to learn from. It can't be scored on these storms, since it has seen all
     of them, so the cross-validated score stands in for it until the test split.
+
+    All the seeds are fitted, because the model that was measured is the average of them.
 
     The filter is inside this function, so passing the full table can't reach test.
 
@@ -540,9 +542,9 @@ def fit_final(
         device: "cpu" or "cuda", from ``pick_device``.
 
     Returns:
-        {(lead_h, component): fitted model}, to pass to ``predict_xgboost``.
+        {seed: models}, to pass to ``predict_seeds``.
     """
-    return fit_fixed(development(rows), truth, settings, device)
+    return fit_seeds(development(rows), truth, settings, device)
 
 
 def best_settings(search_table: pd.DataFrame) -> dict:
@@ -638,3 +640,42 @@ def load_models(directory: str | Path | None = None) -> dict[tuple[int, str], xg
             model.load_model(_model_path(directory, lead_h, component))
             models[(lead_h, component)] = model
     return models
+
+
+def _seed_dir(directory: Path, seed: int) -> Path:
+    return directory / f"seed{seed}"
+
+
+def save_final(
+    fitted: dict[int, dict[tuple[int, str], xgb.XGBRegressor]],
+    search_table: pd.DataFrame,
+    directory: str | Path | None = None,
+) -> None:
+    """Write every seed's models, one folder per seed.
+
+    Args:
+        fitted: the result of ``fit_final``.
+        search_table: the table from ``search_cv``, kept as a record of what was tried.
+        directory: where to write. Leave it out to use ``config.xgboost_final_dir``.
+    """
+    directory = Path(directory) if directory else config.xgboost_final_dir()
+    for seed, models in fitted.items():
+        save_models(models, search_table, _seed_dir(directory, seed))
+
+
+def load_final(
+    directory: str | Path | None = None,
+) -> dict[int, dict[tuple[int, str], xgb.XGBRegressor]]:
+    """Read every seed's models back. A missing seed stops the run.
+
+    A final forecast from four seeds would look normal and quietly not be the model that
+    was measured, so all of them have to be there.
+
+    Args:
+        directory: where they were written. Leave it out to use ``config.xgboost_final_dir``.
+
+    Returns:
+        {seed: models}, to pass to ``predict_seeds``.
+    """
+    directory = Path(directory) if directory else config.xgboost_final_dir()
+    return {seed: load_models(_seed_dir(directory, seed)) for seed in SEEDS}

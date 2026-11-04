@@ -175,28 +175,40 @@ def test_fit_final_learns_from_every_block_and_nothing_else(table, rows, truth):
     corrupted.loc[corrupted["SID"].isin(later["SID"]), ["lat", "lon"]] += 40.0
     full = pd.concat([rows, later[rows.columns]], ignore_index=True)
 
-    clean = xgb_model.fit_final(rows, truth, TINY_SETTINGS, "cpu")
-    reached = xgb_model.fit_final(full, corrupted, TINY_SETTINGS, "cpu")
+    clean = xgb_model.fit_final(rows, truth, SEEDED_SETTINGS, "cpu")
+    reached = xgb_model.fit_final(full, corrupted, SEEDED_SETTINGS, "cpu")
     tm.assert_frame_equal(
-        xgb_model.predict_xgboost(clean, rows),
-        xgb_model.predict_xgboost(reached, rows),
+        xgb_model.predict_seeds(clean, rows),
+        xgb_model.predict_seeds(reached, rows),
     )
 
-    every_block = xgb_model.fit_fixed(rows, truth, TINY_SETTINGS, "cpu")
+    every_block = xgb_model.fit_seeds(rows, truth, SEEDED_SETTINGS, "cpu")
     tm.assert_frame_equal(
-        xgb_model.predict_xgboost(clean, rows),
-        xgb_model.predict_xgboost(every_block, rows),
+        xgb_model.predict_seeds(clean, rows),
+        xgb_model.predict_seeds(every_block, rows),
     )
+
+
+def test_fit_final_fits_every_seed(rows, truth):
+    assert tuple(xgb_model.fit_final(rows, truth, TINY_SETTINGS, "cpu")) == xgb_model.SEEDS
 
 
 def test_final_models_reload_with_identical_forecasts(rows, truth, tmp_path):
-    models = xgb_model.fit_final(rows, truth, TINY_SETTINGS, "cpu")
-    xgb_model.save_models(models, pd.DataFrame([TINY_SETTINGS]), tmp_path)
-    reloaded = xgb_model.load_models(tmp_path)
+    fitted = xgb_model.fit_final(rows, truth, SEEDED_SETTINGS, "cpu")
+    xgb_model.save_final(fitted, pd.DataFrame([SEEDED_SETTINGS]), tmp_path)
+    reloaded = xgb_model.load_final(tmp_path)
     tm.assert_frame_equal(
-        xgb_model.predict_xgboost(models, rows),
-        xgb_model.predict_xgboost(reloaded, rows),
+        xgb_model.predict_seeds(fitted, rows),
+        xgb_model.predict_seeds(reloaded, rows),
     )
+
+
+def test_a_missing_seed_stops_the_final_models_loading(rows, truth, tmp_path):
+    fitted = xgb_model.fit_final(rows, truth, TINY_SETTINGS, "cpu")
+    del fitted[xgb_model.SEEDS[-1]]
+    xgb_model.save_final(fitted, pd.DataFrame([TINY_SETTINGS]), tmp_path)
+    with pytest.raises(Exception, match="seed46|lead24"):
+        xgb_model.load_final(tmp_path)
 
 
 def test_the_averaged_seeds_are_the_five_agreed():
