@@ -24,7 +24,7 @@ The project decisions behind these modules are in `CLAUDE.md`.
 
 **What it does:** the one place that says where data lives.
 
-**Inputs and outputs:** reads the `CYCLONE_DATA_DIR` environment variable. `data_dir()`, `ibtracs_path(basin)` and `ni_clean_path()` return paths.
+**Inputs and outputs:** reads the `CYCLONE_DATA_DIR` environment variable. `data_dir()`, `ibtracs_path(basin)`, `ni_clean_path()` and `xgboost_dir()` return paths.
 
 **Why it's built this way:**
 - Changing one variable moves all the data between your laptop and Colab, with no code changes.
@@ -231,6 +231,69 @@ Mean error on the validation split, on identical cases:
 - On the real data, corrupting every fix after each storm's midpoint left all 2,031 start times up to the midpoint unchanged, across 242 storms, while all 2,647 later ones changed.
 
 **Reused by:** the LSTM can read the same inputs, under the same leakage test. WP pretraining can use it unchanged, since the land data is global.
+
+## xgb_model.py
+
+**What it does:** fits XGBoost, picks its settings on validation, forecasts, and saves and reloads the models.
+
+**Inputs and outputs:**
+- `search(features, truth)` tries 20 combinations of settings. It returns the best six models and a table of every combination tried, best first.
+- `fit_models(features, truth, settings, device)` fits the six models with one combination.
+- `predict_xgboost(models, features)` returns forecasts in the format `scoring.score` takes.
+- `save_models(models, search_table)` and `load_models()` write and read `data/models/xgboost`, which is git-ignored and rebuilt by notebook 03.
+- `pick_device()`, `sample_settings()`, `best_settings(search_table)`, `tree_counts(models)` and `gain_shares(models)` are the supporting pieces.
+
+**Why it's built this way:**
+- XGBoost builds a chain of small decision trees, each correcting what the trees before it got wrong. Unlike CLIPER's straight line, it can learn rules that only apply in some situations.
+- There are six models, one per lead time and component. Lead times are separate because what matters changes with range, and each has its own cases. Components are separate because the tree regressor predicts one number at a time. The cost is that a forecast's points aren't tied together, so a track can wobble.
+- It predicts the change in position, as `CLAUDE.md` requires, so its forecasts come out on the same footing as CLIPER's.
+- `fit_models` filters to the splits itself, as `fit_cliper` does. Trees learn only from train, validation only stops them adding trees, and test is never read. Overwriting all test inputs and truth left the forecasts identical, while changing train inputs did change them.
+- One combination is used for all six models. With so few validation storms, a separate choice per model would tune harder to those storms.
+- Combinations are compared in great-circle km, not the RMSE in degrees the trees train on. Each lead's error is divided by the best any combination reached there, so 72 h's larger errors don't decide everything.
+- `min_child_weight` is the minimum samples per leaf: with a squared-error target it's exactly a count of rows.
+- `pick_device` runs a tiny fit, because seeing a GPU isn't enough. The local MX130 shows up in `nvidia-smi`, and XGBoost still refuses it (`This program was not compiled for SM 50`), so this returns `cpu` there. The GPU path hasn't been run yet, since no GPU here can use it. The search takes about a minute on this laptop's CPU.
+- Results are repeatable: the same data on the same device gave identical forecasts across separate runs. A GPU can give slightly different models.
+- `gain_shares` counts only the trees a model really uses. A model keeps the 50 trees after its best point, and `feature_importances_` counts those too.
+- Models are saved in XGBoost's JSON format, and reloading gives identical forecasts. It keeps the best tree count and the input names, so a saved model refuses inputs that have changed.
+- The search has no checkpoints: it takes about a minute, so a dropped session loses little. The LSTM will need them.
+
+Mean error on the validation split, on identical cases, with the winning settings (`max_depth` 4, `learning_rate` 0.05, `min_child_weight` 40, `subsample` 0.6):
+
+| Lead time | Cases | Persistence | CLIPER | XGBoost | Skill vs CLIPER |
+|---:|---:|---:|---:|---:|---:|
+| +24 h | 438 | 137.6 km | 129.0 km | 118.8 km | 7.9% |
+| +48 h | 340 | 319.7 km | 289.0 km | 275.4 km | 4.7% |
+| +72 h | 256 | 509.8 km | 459.1 km | 422.4 km | 8.0% |
+
+**How far to trust that skill.** These are one-off tests, on validation only:
+
+| Test | +24 h | +48 h | +72 h |
+|---|---:|---:|---:|
+| Skill as reported | 7.9% | 4.7% | 8.0% |
+| 90% range, resampling whole storms 4,000 times | 4.3 to 11.2% | −1.5 to 10.3% | −1.6 to 16.7% |
+| Pick on half the storms, score on those | 8.4% | 7.2% | 9.1% |
+| Pick on half the storms, score on the other half | 5.6% | 0.0% | 2.9% |
+
+- The last two rows pool four random halvings, each used both ways round. Early stopping also used only the picking half.
+- The gap between them is the optimism from choosing on validation, and it's not small. The fresh row leans a little low, because only half the storms guided the choice.
+- So XGBoost's lead at +24 h looks real, while at +48 and +72 h it may be small or nothing. The test split will settle that.
+- Shuffling the train targets sent validation error to 384, 628 and 883 km, so the skill comes from real signal and not from a bug.
+
+**Other one-off tests:**
+
+| Mean validation error (km) | +24 h | +48 h | +72 h |
+|---:|---:|---:|---:|
+| All inputs | 118.8 | 275.4 | 422.4 |
+| Without 6 h motion (54% of the gain) | 125.2 | 278.6 | 430.4 |
+| Without any motion | 205.6 | 391.9 | 542.7 |
+| Land distance without islands under 5,000 km² | 119.1 | 276.8 | 423.2 |
+| Without distance to land | 118.7 | 272.5 | 423.7 |
+
+- Gain doesn't mean need. The two inputs with the most gain cost only 3 to 8 km to lose, because the 12 and 24 h windows overlap with them.
+- The choice of land mask makes almost no difference, even though it changes the distance for 1,613 of the 4,678 start times.
+- Distance to land itself adds nothing measurable on validation. It stays because it was asked for, and it may matter more for intensity than for track.
+
+**Reused by:** notebook 03. The LSTM has to beat these same numbers on the same cases, under the same rules for validation and test.
 
 ## plotting.py
 

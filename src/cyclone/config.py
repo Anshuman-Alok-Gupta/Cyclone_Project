@@ -36,3 +36,8 @@ def ibtracs_path(basin: str) -> Path:
 def ni_clean_path() -> Path:
     """Return the path of the cleaned North Indian Ocean table."""
     return data_dir() / "processed" / "ni_clean.parquet"
+
+
+def xgboost_dir() -> Path:
+    """Return the folder holding the fitted XGBoost models."""
+    return data_dir() / "models" / "xgboost"

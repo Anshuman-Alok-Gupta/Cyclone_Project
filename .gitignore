@@ -5,6 +5,9 @@
 data/raw/
 data/processed/
 
+# Fitted models (rebuilt by running notebook 03)
+data/models/
+
 # Python / Jupyter caches
 __pycache__/
 .ipynb_checkpoints/
