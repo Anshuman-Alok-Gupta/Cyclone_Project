@@ -40,10 +40,21 @@ This is Project 1 of 3, leading to benchmarking AI weather models (GraphCast, Pa
 
 ## Evaluation
 - Split by year (`SEASON`), never randomly:
-  - train: up to and including 2012
-  - validate: 2013–2017
+  - development: 1980–2017, for choosing and comparing models
   - test: 2018–2024
   - excluded: 2025 onward (provisional data)
+- **Model selection uses 5-fold blocked cross-validation over 1980–2017.** The blocks are whole, consecutive seasons:
+  1980–87, 1988–95, 1996–2003, 2004–10 and 2011–17, defined once in `src/cyclone/folds.py`.
+  Each block is forecast by models fitted on the other four, and models are compared on those out-of-fold forecasts.
+  - Why: a single validation split of 27 storms was too few. On storms held back from the choice, XGBoost's lead over
+    CLIPER at +48 h fell from 4.7% to 0%. Evidence is in `docs/components.md`.
+  - No early stopping on a held-out block: searching the number of trees replaces it, since a block that chooses
+    its own stopping point leaks into its own forecasts.
+  - Report skill against CLIPER with a 95% interval from a bootstrap of whole storms, not rows.
+- **The old train/val split stays only so notebooks 02–03 still run:** train up to and including 2012, validate 2013–2017.
+  Don't use it to choose or compare models.
+- **Test (2018–2024) is scored once, at the end of Project 1,** after everything is fixed. It's in no block, and
+  scoring it earlier or going back to change something after seeing it would turn it into a second validation set.
 - Scoring harness: great-circle error in km. It must be a standalone module that accepts any table of forecast positions, so it can score AI-model output in Project 3.
 
 ## Model input rules
