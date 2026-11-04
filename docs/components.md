@@ -12,6 +12,12 @@ Forecasting then starts from the saved table:
 samples.make_truth, samples.make_init_times → checks.check_samples → baselines → scoring.score → scoring.summarize
 ```
 
+XGBoost adds one step, and is scored the same way:
+
+```
+samples.make_init_times → features.build_features → xgb_model → scoring.score → scoring.summarize
+```
+
 The project decisions behind these modules are in `CLAUDE.md`.
 
 ## config.py
@@ -174,6 +180,44 @@ Mean error on the validation split, on identical cases:
 
 **Reused by:** every later model, as the reference it has to beat.
 
+## features.py
+
+**What it does:** turns the start-time table into the 19 numbers a model reads.
+
+**Inputs and outputs:**
+- `build_features(init_times)` takes the table from `samples.make_init_times` and returns one row per start time, in the same order: `ID_COLUMNS` (`SID`, `init_time`, `split`), then `FEATURE_COLUMNS`.
+- `distance_to_land_km(lat, lon)` returns the distance to the nearest coast, and 0 over land.
+
+| Group | Inputs | What it tells the model |
+|---|---|---|
+| Position | `lat`, `lon` | Storms in one place tend to move one way |
+| Motion | `dlat_6h`, `dlon_6h`, `dlat_12h`, `dlon_12h`, `dlat_24h`, `dlon_24h` | Recent movement. 6 h is the latest but noisiest, 24 h the steadiest |
+| Motion | `speed_kmh`, `heading_sin`, `heading_cos` | The 12 h movement as speed and direction, which a tree can't easily work out from Δlat and Δlon |
+| Motion | `dlat_change`, `dlon_change` | The last 12 h minus the 12 h before: speeding up, slowing down or starting to turn |
+| Intensity | `wind`, `dwind_12h`, `dwind_24h` | Strength, and whether it's growing |
+| Season | `day_sin`, `day_cos` | Time of year, which changes the winds that steer storms |
+| Land | `dist_to_land_km` | How close the coast is |
+
+**Why it's built this way:**
+- Inputs come only from `make_init_times`, which holds no position or wind after t0. Each row is calculated from that row alone, with no dataset-wide averages, so another storm or a later fix can't affect it.
+- Heading and day of year go in as sin and cos, because both are circles. As plain numbers, 359° and 1°, or 31 December and 1 January, would look far apart when they're neighbours.
+- Longitude is scaled by cos(latitude) before taking a heading, because a degree of longitude is shorter away from the equator.
+- A storm that hasn't moved has no heading, so sin and cos are left blank rather than defaulting to north. No row is like this today: every start time moved over the past 12 h.
+- A missing wind stays `NaN`. When a tree splits on a column, XGBoost tries the missing rows down each side and keeps the better side as that split's default direction. Filling in an average would invent a wind.
+- That matters less than it sounds. Only 24 start times have no wind, all in train in 1980. No validation or test row has a blank input, so none of them ever takes a default direction.
+- `ID_COLUMNS` stay in the table for matching, but a model reads only `FEATURE_COLUMNS`, so a storm ID or date can't become an input by accident.
+- `USA_PRES` is left out: it's missing before 2001, so a model could learn "missing means old storm". `DIST2LAND`, `STORM_SPEED`, `STORM_DIR` and `LANDFALL` are left out for the reasons in `CLAUDE.md`.
+- Distance to land is measured along the Earth's surface to points every 0.02° (about 2 km) along Natural Earth's 10 m coast. That's within 0.5 km of a spacing twice as fine, while the file's own points alone can be 7 km off. Land is tested separately, since a coast is equally close from either side.
+- cartopy is imported inside `_load_land`, so importing this module for its column lists doesn't load it. The land data loads once per run, in several seconds, and the file is downloaded the first time.
+
+**Tests:** `tests/test_features.py`.
+- The leakage test rewrites every position and wind after t0, rebuilds through `make_init_times` and `build_features`, and requires every row up to t0 to be unchanged.
+- It catches real leaks: adding a future wind, a future position, or history matched forwards in time each made it fail.
+- Its partner test moves one past fix and requires the features to change, because inputs that ignored the track entirely would pass the leakage test too.
+- On the real data, corrupting every fix after each storm's midpoint left all 2,031 start times up to the midpoint unchanged, across 242 storms, while all 2,647 later ones changed.
+
+**Reused by:** the LSTM can read the same inputs, under the same leakage test. WP pretraining can use it unchanged, since the land data is global.
+
 ## plotting.py
 
 **What it does:** draws storm tracks, forecasts and error charts as visual checks.
@@ -205,7 +249,7 @@ The rules these lead to are in "Model input rules" in `CLAUDE.md`.
   - They don't come from JTWC positions. They match a centred difference of the combined `LAT`/`LON` over the points 3 h either side (96.7% within 1 kt, compared with 66.9% for the same calculation on `USA_LAT`/`USA_LON`, and 56% for a backward-only one).
   - So they use the source `CLAUDE.md` rules out, and they use a position 3 h after the forecast start, which a real forecast wouldn't have.
   - Calculate motion from `USA_LAT`/`USA_LON` at the current and previous fixes instead.
-- **`DIST2LAND` was dropped too, and will be recomputed from `USA_LAT`/`USA_LON` in the features step.**
+- **`DIST2LAND` was dropped too, and is recomputed from `USA_LAT`/`USA_LON` in `features.py`.**
   - It follows the combined position. On the 1,000 cleaned rows under 600 km from land where the combined and JTWC positions are at least 25 km apart, distance to a Natural Earth 10m coastline was within 10 km of `DIST2LAND` for 81.6% of rows using the combined position, but 26.7% using JTWC's (median error 2.7 km against 26.9 km).
   - It uses no future data. The same calculation from the combined position 3 h later matched 30.9% of those rows, and 3 h earlier 33.2%.
   - The test coastline isn't the one IBTrACS uses, so the comparison between sources is what counts, not the size of the errors.
