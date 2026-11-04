@@ -41,3 +41,8 @@ def ni_clean_path() -> Path:
 def xgboost_dir() -> Path:
     """Return the folder holding the fitted XGBoost models."""
     return data_dir() / "models" / "xgboost"
+
+
+def xgboost_final_dir() -> Path:
+    """Return the folder holding the final models, refitted on all development seasons."""
+    return data_dir() / "models" / "xgboost_final"

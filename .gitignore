@@ -5,7 +5,7 @@
 data/raw/
 data/processed/
 
-# Fitted models (rebuilt by running notebook 03)
+# Fitted models (rebuilt by running notebooks 03 and 04)
 data/models/
 
 # Python / Jupyter caches

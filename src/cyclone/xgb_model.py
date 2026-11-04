@@ -17,11 +17,18 @@ number of cases. Components are separate because XGBoost's tree regressor predic
 number at a time. The cost is that a forecast's points aren't tied together: the +48 h
 model doesn't know what the +24 h model said, so a track can wobble slightly.
 
-    train:      the trees learn from these storms and nothing else
-    validation: stops each model adding trees, and picks the settings
-    test:       never read here, so it stays a fair exam for the end of Project 1
+There are two ways through this file. Notebook 03 uses the older one, on the train and
+validation split: ``search`` and ``fit_models``. Choosing a model now uses cross-validation:
+``search_cv`` and ``fit_fixed``, with one fit per block of seasons.
+
+Test is never read in either, so it stays a fair exam for the end of Project 1.
+
+There are also two targets. Plain XGBoost predicts the change in position. xgb_residual
+predicts CLIPER's error and adds that to CLIPER's forecast, so it starts from a sensible
+answer and only has to learn what a straight line can't.
 """
 
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
@@ -29,12 +36,15 @@ import pandas as pd
 import xgboost as xgb
 from sklearn.model_selection import ParameterSampler
 
-from cyclone import config
+from cyclone import config, cv
+from cyclone.baselines import fit_cliper_on, predict_cliper
 from cyclone.features import FEATURE_COLUMNS
+from cyclone.folds import development
 from cyclone.samples import LEAD_HOURS, with_truth_at
-from cyclone.scoring import FORECAST_COLUMNS, great_circle_km
+from cyclone.scoring import FORECAST_COLUMNS, great_circle_km, score
 
 MODEL_NAME = "xgboost"
+RESIDUAL_NAME = "xgb_residual"
 COMPONENTS = ("dlat", "dlon")
 
 # Fixes both the choice of settings to try and the random parts of training, so the
@@ -65,6 +75,17 @@ SEARCH_SPACE = {
 MAX_TREES = 3000
 EARLY_STOPPING_ROUNDS = 50
 
+# Cross-validation can't stop early, so the number of trees is searched like any other
+# setting. Early stopping watches a set of storms to decide when to stop. The only storms
+# left over in a fold are the held-out block, and if those chose the tree count, the
+# block's own answers would have shaped the forecast being scored. Holding back some of
+# the learning blocks instead would cost training storms, and give each fold and each of
+# the six models a different count, leaving no single setting to refit with at the end.
+#
+# With a slower learning rate a model needs more trees, so the range is wide enough to
+# suit all three rates. One count is used for all six models, like the other settings.
+CV_SEARCH_SPACE = {**SEARCH_SPACE, "n_estimators": [50, 100, 200, 400]}
+
 
 def pick_device() -> str:
     """Return "cuda" if XGBoost can really train on a GPU here, otherwise "cpu".
@@ -87,6 +108,11 @@ def pick_device() -> str:
 def sample_settings() -> list[dict]:
     """Return the combinations of settings the search will try, always the same ones."""
     return list(ParameterSampler(SEARCH_SPACE, n_iter=N_COMBINATIONS, random_state=SEED))
+
+
+def sample_cv_settings() -> list[dict]:
+    """Return the combinations cross-validation will try, always the same ones."""
+    return list(ParameterSampler(CV_SEARCH_SPACE, n_iter=N_COMBINATIONS, random_state=SEED))
 
 
 def _cases(features: pd.DataFrame, truth: pd.DataFrame, split: str, lead_h: int) -> pd.DataFrame:
@@ -144,9 +170,81 @@ def fit_models(
     return models
 
 
+def _start_points(
+    rows: pd.DataFrame,
+    lead_h: int,
+    base: pd.DataFrame | None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return the latitude and longitude a model's output is added to, one per row.
+
+    Plain XGBoost adds its change in position to where the storm is at t0. xgb_residual
+    adds its correction to CLIPER's forecast. Everything else is the same, so both use
+    this one function.
+
+    Args:
+        rows: the start times.
+        lead_h: the lead time.
+        base: another model's forecasts to correct, or None to start from t0.
+    """
+    if base is None:
+        return rows["lat"].to_numpy(), rows["lon"].to_numpy()
+
+    at_lead = base.loc[base["lead_h"] == lead_h, ["SID", "init_time", "lat", "lon"]]
+    start = rows[["SID", "init_time"]].merge(
+        at_lead, on=["SID", "init_time"], how="left", validate="1:1"
+    )
+    return start["lat"].to_numpy(), start["lon"].to_numpy()
+
+
+def fit_fixed(
+    rows: pd.DataFrame,
+    truth: pd.DataFrame,
+    settings: dict,
+    device: str,
+    base: pd.DataFrame | None = None,
+) -> dict[tuple[int, str], xgb.XGBRegressor]:
+    """Fit the six models on exactly the rows given, with no early stopping.
+
+    Every tree in settings["n_estimators"] is kept. Nothing here watches other storms,
+    so what a model learns comes from these rows alone.
+
+    Args:
+        rows: the start times to learn from.
+        truth: the table from ``samples.make_truth``.
+        settings: one combination from ``sample_cv_settings``.
+        device: "cpu" or "cuda", from ``pick_device``.
+        base: another model's forecasts for these rows. If given, the target is the
+            truth minus that forecast, rather than the truth minus the position at t0.
+
+    Returns:
+        {(lead_h, component): fitted model}, to pass to ``predict_xgboost``.
+    """
+    models = {}
+    for lead_h in LEAD_HOURS:
+        cases = with_truth_at(rows, truth, lead_h)
+        start_lat, start_lon = _start_points(cases, lead_h, base)
+        targets = {
+            "dlat": cases["truth_lat"].to_numpy() - start_lat,
+            "dlon": cases["truth_lon"].to_numpy() - start_lon,
+        }
+        for component in COMPONENTS:
+            model = xgb.XGBRegressor(
+                **settings,
+                objective="reg:squarederror",
+                tree_method="hist",
+                device=device,
+                random_state=SEED,
+            )
+            model.fit(cases[FEATURE_COLUMNS], targets[component])
+            models[(lead_h, component)] = model
+    return models
+
+
 def predict_xgboost(
     models: dict[tuple[int, str], xgb.XGBRegressor],
     features: pd.DataFrame,
+    name: str = MODEL_NAME,
+    base: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Return XGBoost forecasts for every row of features.
 
@@ -154,8 +252,10 @@ def predict_xgboost(
     saved model refuses inputs that have changed since it was trained.
 
     Args:
-        models: the result of ``fit_models`` or ``load_models``.
+        models: the result of ``fit_models``, ``fit_fixed`` or ``load_models``.
         features: the start times to forecast. Pass only the split being scored.
+        name: the name to give these forecasts in the model column.
+        base: the forecasts the models were trained to correct, if any.
 
     Returns:
         Forecasts in the format ``scoring.score`` takes, at each lead time.
@@ -164,14 +264,44 @@ def predict_xgboost(
 
     forecasts = []
     for lead_h in LEAD_HOURS:
+        start_lat, start_lon = _start_points(features, lead_h, base)
         table = features[["SID", "init_time"]].assign(
-            model=MODEL_NAME,
+            model=name,
             lead_h=lead_h,
-            lat=features["lat"] + models[(lead_h, "dlat")].predict(inputs),
-            lon=features["lon"] + models[(lead_h, "dlon")].predict(inputs),
+            lat=start_lat + models[(lead_h, "dlat")].predict(inputs),
+            lon=start_lon + models[(lead_h, "dlon")].predict(inputs),
         )
         forecasts.append(table[FORECAST_COLUMNS])
     return pd.concat(forecasts, ignore_index=True)
+
+
+def xgboost_forecaster(settings: dict, device: str) -> cv.Forecaster:
+    """Return plain XGBoost with these settings, in the form ``cv.out_of_fold`` takes."""
+
+    def forecast(learning: pd.DataFrame, truth: pd.DataFrame, held_out: pd.DataFrame) -> pd.DataFrame:
+        return predict_xgboost(fit_fixed(learning, truth, settings, device), held_out)
+
+    return forecast
+
+
+def residual_forecaster(settings: dict, device: str) -> cv.Forecaster:
+    """Return xgb_residual with these settings, in the form ``cv.out_of_fold`` takes.
+
+    CLIPER is fitted inside this function, on the learning rows only. Using CLIPER's
+    forecasts from a fit on all the storms would carry the held-out block's answers into
+    the fold, through CLIPER.
+
+    On the learning rows CLIPER is forecasting storms it was fitted on, so its errors
+    there are a little smaller than on new storms. With only eight inputs per lead time
+    and about two thousand rows, that difference is very small.
+    """
+
+    def forecast(learning: pd.DataFrame, truth: pd.DataFrame, held_out: pd.DataFrame) -> pd.DataFrame:
+        cliper = fit_cliper_on(learning, truth)
+        models = fit_fixed(learning, truth, settings, device, base=predict_cliper(cliper, learning))
+        return predict_xgboost(models, held_out, RESIDUAL_NAME, base=predict_cliper(cliper, held_out))
+
+    return forecast
 
 
 def _validation_error_km(
@@ -207,9 +337,8 @@ def search(
 
     Picking on validation makes the validation score optimistic. Of 20 combinations,
     the winner is partly the best and partly the luckiest on these particular storms,
-    and early stopping has also looked at them. docs/components.md measures the effect.
-    The fair number comes later, from the test split: it played no part in any of these
-    choices, and is scored once.
+    and early stopping has also looked at them. docs/components.md measures the effect,
+    which is why ``search_cv`` replaced this for choosing models.
 
     Args:
         features: the table from ``features.build_features``.
@@ -232,22 +361,121 @@ def search(
         results.append({**settings, **{f"km_{lead_h}h": km for lead_h, km in errors.items()}})
         print(f"  {number + 1:>2} of {N_COMBINATIONS}: {settings}")
 
-    table = pd.DataFrame(results)
-    error_columns = [f"km_{lead_h}h" for lead_h in LEAD_HOURS]
-    table["relative_error"] = (table[error_columns] / table[error_columns].min()).mean(axis=1)
-
+    table = _with_relative_error(pd.DataFrame(results))
     best = table["relative_error"].idxmin()
     return attempts[best], table.sort_values("relative_error").reset_index(drop=True)
 
 
-def best_settings(search_table: pd.DataFrame) -> dict:
-    """Return the winning settings from ``search``'s table, ready for ``fit_models``.
+def _with_relative_error(table: pd.DataFrame) -> pd.DataFrame:
+    """Add each combination's error relative to the best at each lead, averaged over leads."""
+    error_columns = [f"km_{lead_h}h" for lead_h in LEAD_HOURS]
+    return table.assign(
+        relative_error=(table[error_columns] / table[error_columns].min()).mean(axis=1)
+    )
 
-    A table row holds every value as a float, so each is turned back into the type
-    SEARCH_SPACE gives it. XGBoost refuses a tree depth of 4.0.
+
+def search_cv(
+    rows: pd.DataFrame,
+    truth: pd.DataFrame,
+    make_forecaster: Callable[[dict, str], cv.Forecaster] = xgboost_forecaster,
+    device: str | None = None,
+    checkpoint: str | Path | None = None,
+    resume: bool = False,
+) -> pd.DataFrame:
+    """Try each combination under cross-validation and rank them, best first.
+
+    Each combination forecasts every development start time out of fold, and is judged
+    on the mean error over all those cases. So every case counts once, and the score is
+    the same one models are compared on later. The relative-error rule is the same as in
+    ``search``: 5% worse at 24 h counts the same as 5% worse at 72 h.
+
+    This is much harder to fool than one validation split, since the winner has to do
+    well across all the storms rather than 27 of them. It still isn't free: the winner
+    is partly the luckiest of 20, so its score leans slightly optimistic.
+
+    A search takes minutes on a CPU, so with ``checkpoint`` set, the results so far are
+    written after every combination, and a dropped session loses one combination at
+    most. Resuming has to be asked for. If it happened by itself, rerunning after a
+    change to the data or inputs would quietly reuse old results.
+
+    Args:
+        rows: the table from ``cv.model_rows``.
+        truth: the table from ``samples.make_truth``.
+        make_forecaster: ``xgboost_forecaster`` or ``residual_forecaster``.
+        device: "cpu" or "cuda". Leave it out to use ``pick_device``.
+        checkpoint: a CSV file to write progress to, in the data directory.
+        resume: skip the combinations already in the checkpoint file.
+
+    Returns:
+        Every combination tried with its error at each lead time, best first.
+    """
+    device = device or pick_device()
+    print(f"Searching {N_COMBINATIONS} combinations on {device}, 5 folds each")
+
+    checkpoint = Path(checkpoint) if checkpoint else None
+    if checkpoint:
+        checkpoint.parent.mkdir(parents=True, exist_ok=True)
+
+    results = []
+    if resume and checkpoint and checkpoint.exists():
+        results = pd.read_csv(checkpoint).to_dict("records")
+        print(f"  Resuming: {len(results)} combinations already done")
+    finished = [{name: row[name] for name in CV_SEARCH_SPACE} for row in results]
+
+    for number, settings in enumerate(sample_cv_settings()):
+        if settings in finished:
+            continue
+        forecasts = cv.out_of_fold(rows, truth, make_forecaster(settings, device))
+        errors = score(forecasts, truth, report=False).groupby("lead_h")["error_km"].mean()
+        results.append({**settings, **{f"km_{lead_h}h": errors[lead_h] for lead_h in LEAD_HOURS}})
+        if checkpoint:
+            pd.DataFrame(results).to_csv(checkpoint, index=False)
+        print(f"  {number + 1:>2} of {N_COMBINATIONS}: {settings}")
+
+    table = _with_relative_error(pd.DataFrame(results))
+    return table.sort_values("relative_error").reset_index(drop=True)
+
+
+def fit_final(
+    rows: pd.DataFrame,
+    truth: pd.DataFrame,
+    settings: dict,
+    device: str,
+) -> dict[tuple[int, str], xgb.XGBRegressor]:
+    """Refit chosen settings on every development season, for the end of Project 1.
+
+    Cross-validation's models each saw four blocks, and their job was to measure the
+    settings. Once the settings are chosen, using all five blocks gives the final model
+    more storms to learn from. It can't be scored on these storms, since it has seen all
+    of them, so the cross-validated score stands in for it until the test split.
+
+    The filter is inside this function, so passing the full table can't reach test.
+
+    Args:
+        rows: a table with a "fold" column, such as the one from ``cv.model_rows``.
+        truth: the table from ``samples.make_truth``.
+        settings: the chosen settings, from ``best_settings``.
+        device: "cpu" or "cuda", from ``pick_device``.
+
+    Returns:
+        {(lead_h, component): fitted model}, to pass to ``predict_xgboost``.
+    """
+    return fit_fixed(development(rows), truth, settings, device)
+
+
+def best_settings(search_table: pd.DataFrame) -> dict:
+    """Return the winning settings from a search table, ready to fit with.
+
+    It reads a table from ``search`` or ``search_cv``. A table row holds every value as a
+    float, so each is turned back into the type the search space gives it. XGBoost
+    refuses a tree depth of 4.0.
     """
     winner = search_table.iloc[0]
-    return {name: type(values[0])(winner[name]) for name, values in SEARCH_SPACE.items()}
+    return {
+        name: type(values[0])(winner[name])
+        for name, values in CV_SEARCH_SPACE.items()
+        if name in search_table.columns
+    }
 
 
 def tree_counts(models: dict[tuple[int, str], xgb.XGBRegressor]) -> pd.DataFrame:

@@ -30,7 +30,7 @@ The project decisions behind these modules are in `CLAUDE.md`.
 
 **What it does:** the one place that says where data lives.
 
-**Inputs and outputs:** reads the `CYCLONE_DATA_DIR` environment variable. `data_dir()`, `ibtracs_path(basin)`, `ni_clean_path()` and `xgboost_dir()` return paths.
+**Inputs and outputs:** reads the `CYCLONE_DATA_DIR` environment variable. `data_dir()`, `ibtracs_path(basin)`, `ni_clean_path()`, `xgboost_dir()` and `xgboost_final_dir()` return paths.
 
 **Why it's built this way:**
 - Changing one variable moves all the data between your laptop and Colab, with no code changes.
@@ -281,14 +281,17 @@ Mean error on the validation split, on identical cases:
 
 ## xgb_model.py
 
-**What it does:** fits XGBoost, picks its settings on validation, forecasts, and saves and reloads the models.
+**What it does:** fits XGBoost, picks its settings, forecasts, and saves and reloads the models. It has two routes: cross-validation, which is how models are chosen now, and the older train and validation route, which notebook 03 still uses.
 
 **Inputs and outputs:**
-- `search(features, truth)` tries 20 combinations of settings. It returns the best six models and a table of every combination tried, best first.
-- `fit_models(features, truth, settings, device)` fits the six models with one combination.
-- `predict_xgboost(models, features)` returns forecasts in the format `scoring.score` takes.
-- `save_models(models, search_table)` and `load_models()` write and read `data/models/xgboost`, which is git-ignored and rebuilt by notebook 03.
-- `pick_device()`, `sample_settings()`, `best_settings(search_table)`, `tree_counts(models)` and `gain_shares(models)` are the supporting pieces.
+- `search_cv(rows, truth, make_forecaster)` tries 20 combinations under cross-validation, and returns a table of them, best first.
+- `fit_fixed(rows, truth, settings, device, base=None)` fits the six models on exactly the rows given, keeping every tree. With `base`, the target is the truth minus that forecast.
+- `xgboost_forecaster(settings, device)` and `residual_forecaster(settings, device)` return the two models in the form `cv.out_of_fold` takes.
+- `fit_final(rows, truth, settings, device)` refits chosen settings on all of 1980–2017.
+- `predict_xgboost(models, features, name, base=None)` returns forecasts in the format `scoring.score` takes.
+- `search(features, truth)` and `fit_models(features, truth, settings, device)` are the older route, for notebook 03.
+- `save_models(models, search_table, directory)` and `load_models(directory)` write and read a folder of models, which is git-ignored. `data/models/xgboost` is rebuilt by notebook 03, and `data/models/xgboost_final` by notebook 04.
+- `pick_device()`, `sample_settings()`, `sample_cv_settings()`, `best_settings(search_table)`, `tree_counts(models)` and `gain_shares(models)` are the supporting pieces. `tree_counts` and `gain_shares` need early stopping, so they only work on the older route.
 
 **Why it's built this way:**
 - XGBoost builds a chain of small decision trees, each correcting what the trees before it got wrong. Unlike CLIPER's straight line, it can learn rules that only apply in some situations.
@@ -302,7 +305,23 @@ Mean error on the validation split, on identical cases:
 - Results are repeatable: the same data on the same device gave identical forecasts across separate runs. A GPU can give slightly different models.
 - `gain_shares` counts only the trees a model really uses. A model keeps the 50 trees after its best point, and `feature_importances_` counts those too.
 - Models are saved in XGBoost's JSON format, and reloading gives identical forecasts. It keeps the best tree count and the input names, so a saved model refuses inputs that have changed.
-- The search has no checkpoints: it takes about a minute, so a dropped session loses little. The LSTM will need them.
+- `search` has no checkpoints: it takes about a minute, so a dropped session loses little.
+
+**Under cross-validation:**
+- Early stopping can't be used. It watches a set of storms to decide when to stop, and in a fold the only storms left over are the held-out block. If those chose the tree count, the block's own answers would have shaped the forecast being scored.
+- So the number of trees is searched, like any other setting. Holding back part of the learning blocks to stop on would cost training storms, and would give each fold and each of the six models a different count, leaving no single setting to refit with at the end.
+- One count is used for all six models. Early stopping used to give each its own, and the longer leads stopped sooner, so this may suit some leads better than others.
+- `search_cv` judges each combination on the mean error over every out-of-fold case, so every case counts once and the score is the same one models are compared on later. The relative-error rule is unchanged.
+- `search_cv` takes about 5 minutes on this laptop's CPU, so with `checkpoint` set it writes its results after every combination. Resuming has to be asked for with `resume=True`. If it happened by itself, a rerun after a change to the data would quietly reuse old results.
+- `fit_final` filters to the development seasons itself, so passing the full table can't reach test. It can't be scored on these storms, since it has seen them all, so the cross-validated score stands in for it until the test split.
+
+**xgb_residual** predicts CLIPER's error and adds it to CLIPER's forecast, so it starts from a sensible answer and only has to learn what a straight line can't.
+- It's the same code as plain XGBoost with a different starting point. Plain XGBoost adds its output to the position at t0, and `xgb_residual` adds it to CLIPER's forecast. `_start_points` is the only place they differ.
+- CLIPER is fitted inside `residual_forecaster`, on the learning rows only. A CLIPER fitted on all the storms would carry the held-out block's answers into the fold.
+- On the learning rows, CLIPER is forecasting storms it was fitted on, so its errors there are a little smaller than on new storms. With eight inputs per lead and about two thousand rows, that difference is very small.
+- It gets its own search with the same 20 combinations. It has a much smaller target than plain XGBoost, so borrowing plain XGBoost's settings would handicap it.
+
+Results from the older route follow. Notebook 04's cross-validated results replace them for choosing a model.
 
 Mean error on the validation split, on identical cases, with the winning settings (`max_depth` 4, `learning_rate` 0.05, `min_child_weight` 40, `subsample` 0.6):
 
@@ -340,7 +359,7 @@ Mean error on the validation split, on identical cases, with the winning setting
 - The choice of land mask makes almost no difference, even though it changes the distance for 1,613 of the 4,678 start times.
 - Distance to land itself adds nothing measurable on validation. It stays because it was asked for, and it may matter more for intensity than for track.
 
-**Reused by:** notebook 03. The LSTM has to beat these same numbers on the same cases, under the same rules for validation and test.
+**Reused by:** notebooks 03 and 04. The LSTM has to go through the same cross-validation, on the same cases.
 
 ## cv.py
 

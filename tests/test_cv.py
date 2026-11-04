@@ -4,61 +4,32 @@ The leakage tests matter most. Cross-validation is only worth doing if each bloc
 forecast by a model that never saw it. A leak here wouldn't crash: it would quietly
 improve the scores of every model, which is the very thing the method exists to stop.
 
-The data is a set of made-up storms, one per season, so these run anywhere and need
-no download. The storms differ at random, so a change in the data shows in a model.
+The data is the set of made-up storms in conftest.py, one per season, so these run
+anywhere and need no download.
 """
 
-import numpy as np
 import pandas as pd
 import pandas.testing as tm
 import pytest
 
-from cyclone import cv
+from cyclone import cv, xgb_model
 from cyclone.baselines import cliper_forecast, persistence_forecast
 from cyclone.features import build_features
-from cyclone.folds import FOLD_NAMES, FOLD_SEASONS, NOT_IN_A_FOLD, add_fold
+from cyclone.folds import FOLD_NAMES, NOT_IN_A_FOLD, add_fold
 from cyclone.samples import LEAD_HOURS, make_init_times, make_truth, with_truth_at
 from cyclone.scoring import score, skill, summarize
 from cyclone.splits import VAL_LAST_SEASON
 
-SIX_HOURS = pd.Timedelta(hours=6)
 HELD_OUT = FOLD_NAMES[2]
 
-
-def make_storm(season: int, rng: np.random.Generator) -> pd.DataFrame:
-    """Return one made-up storm in the cleaned table's format."""
-    steps = np.arange(24)
-    start = pd.Timestamp(f"{season}-05-01")
-    return pd.DataFrame(
-        {
-            "SID": f"STORM{season}",
-            "SEASON": season,
-            "ISO_TIME": start + steps * SIX_HOURS,
-            "split": "train",
-            "USA_LAT": 8.0 + rng.uniform(0.1, 0.5) * steps + rng.normal(0, 0.1, len(steps)),
-            "USA_LON": 95.0 - rng.uniform(0.1, 0.6) * steps + rng.normal(0, 0.1, len(steps)),
-            "USA_WIND": 30.0 + rng.uniform(0.5, 3.0) * steps,
-        }
-    )
-
-
-@pytest.fixture(scope="module")
-def table() -> pd.DataFrame:
-    """Return one storm per development season, plus two storms from after them."""
-    rng = np.random.default_rng(0)
-    seasons = range(FOLD_SEASONS[0][0], VAL_LAST_SEASON + 3)
-    return pd.concat([make_storm(season, rng) for season in seasons], ignore_index=True)
-
-
-@pytest.fixture(scope="module")
-def rows(table) -> pd.DataFrame:
-    init_times = make_init_times(table)
-    return cv.model_rows(init_times, build_features(init_times), table)
-
-
-@pytest.fixture(scope="module")
-def truth(table) -> pd.DataFrame:
-    return make_truth(table)
+# Small, so that the XGBoost leakage tests stay quick.
+TINY_SETTINGS = {
+    "max_depth": 2,
+    "learning_rate": 0.1,
+    "min_child_weight": 1,
+    "subsample": 1.0,
+    "n_estimators": 5,
+}
 
 
 def corrupt_block(truth: pd.DataFrame, rows: pd.DataFrame, fold: str) -> pd.DataFrame:
@@ -152,6 +123,38 @@ def test_changing_a_blocks_truth_leaves_its_cliper_forecasts_unchanged(rows, tru
     before = cv.out_of_fold(rows, truth, cliper_forecast)
     after = cv.out_of_fold(rows, corrupt_block(truth, rows, fold), cliper_forecast)
     tm.assert_frame_equal(block_forecasts(before, fold), block_forecasts(after, fold))
+
+
+@pytest.mark.parametrize(
+    "make_forecaster", [xgb_model.xgboost_forecaster, xgb_model.residual_forecaster]
+)
+def test_changing_a_blocks_truth_leaves_its_xgboost_forecasts_unchanged(
+    rows, truth, make_forecaster
+):
+    forecaster = make_forecaster(TINY_SETTINGS, "cpu")
+    before = cv.out_of_fold(rows, truth, forecaster)
+    after = cv.out_of_fold(rows, corrupt_block(truth, rows, HELD_OUT), forecaster)
+
+    tm.assert_frame_equal(block_forecasts(before, HELD_OUT), block_forecasts(after, HELD_OUT))
+    for fold in set(FOLD_NAMES) - {HELD_OUT}:
+        assert not block_forecasts(before, fold)["lat"].equals(block_forecasts(after, fold)["lat"])
+
+
+def test_xgb_residuals_cliper_is_fitted_on_the_learning_blocks_only(rows, truth, monkeypatch):
+    fitted_on = []
+    real_fit = xgb_model.fit_cliper_on
+
+    def spy(learning, learning_truth):
+        fitted_on.append((set(learning["fold"]), set(learning_truth["SID"])))
+        return real_fit(learning, learning_truth)
+
+    monkeypatch.setattr(xgb_model, "fit_cliper_on", spy)
+    cv.out_of_fold(rows, truth, xgb_model.residual_forecaster(TINY_SETTINGS, "cpu"))
+
+    assert len(fitted_on) == len(FOLD_NAMES)
+    for fold, (folds_seen, storms_seen) in zip(FOLD_NAMES, fitted_on):
+        assert folds_seen == set(FOLD_NAMES) - {fold}
+        assert storms_seen.isdisjoint(rows[rows["fold"] == fold]["SID"])
 
 
 def test_changing_a_blocks_truth_does_change_the_other_blocks(rows, truth):
