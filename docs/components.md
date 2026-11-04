@@ -9,7 +9,7 @@ config → io.load_ibtracs → filters.clean_ni → splits.assign_split → chec
 Forecasting then starts from the saved table:
 
 ```
-samples.make_truth, samples.make_init_times → checks.check_samples
+samples.make_truth, samples.make_init_times → checks.check_samples → baselines → scoring.score → scoring.summarize
 ```
 
 The project decisions behind these modules are in `CLAUDE.md`.
@@ -144,6 +144,34 @@ The project decisions behind these modules are in `CLAUDE.md`.
 **Tests:** `tests/test_scoring.py`. Install pytest with `pip install -e ".[dev]"`, then run `pytest`. It's a dev dependency so Colab and Kaggle never install it.
 
 **Reused by:** every model in this project, and the AI models in Project 3.
+
+## baselines.py
+
+**What it does:** the two simple forecasts every later model has to beat.
+
+**Inputs and outputs:**
+- `persistence(init_times)` extends the average motion from t0−12 h to t0 in a straight line, to +24, +48 and +72 h.
+- `fit_cliper(init_times, truth)` fits one linear regression per lead time and returns `{lead_h: model}`.
+- `predict_cliper(models, init_times)` returns CLIPER forecasts for the start times it's given.
+- `persistence` and `predict_cliper` both return tables in the format `scoring.score` takes.
+
+**Why it's built this way:**
+- A score means little alone. "150 km at 24 h" is only useful next to what a simple method gets on the same cases.
+- `fit_cliper` filters to the train split itself, so passing the full table can't leak other storms into the fit. Corrupting every non-train position by 30° left the coefficients unchanged.
+- CLIPER predicts the change in position, as `CLAUDE.md` requires. Absolute position would make the fit spend its effort rediscovering where the storm already is.
+- Its eight inputs are all known at t0: position, motion over the past 12 and 24 h (Δlat and Δlon for each), and day of year as sin and cos. As a plain number, 31 December and 1 January would look a year apart, not a day.
+- There's no wind input, so the 24 start times with no wind need no special handling. That's why this is a simplified CLIPER: the classic versions also use intensity.
+- Both baselines forecast every start time, even with no truth at that lead time. `scoring.score` then reports those, the same way it would for any model.
+
+Mean error on the validation split, on identical cases:
+
+| Lead time | Cases | Persistence | CLIPER |
+|---:|---:|---:|---:|
+| +24 h | 438 | 137.6 km | 129.0 km |
+| +48 h | 340 | 319.7 km | 289.0 km |
+| +72 h | 256 | 509.8 km | 459.1 km |
+
+**Reused by:** every later model, as the reference it has to beat.
 
 ## plotting.py
 
