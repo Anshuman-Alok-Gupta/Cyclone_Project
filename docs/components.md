@@ -361,6 +361,24 @@ Mean error on the validation split, on identical cases, with the winning setting
 
 **Reused by:** notebooks 03 and 04. The LSTM has to go through the same cross-validation, on the same cases.
 
+## consensus.py
+
+**What it does:** averages the forecast positions of several models into one forecast.
+
+**Inputs and outputs:** `consensus(forecasts, members)` takes forecasts in the scoring format and the names of the models to average. It returns one forecast per case, named `consensus`, and keeps extra columns such as `fold`.
+
+**Why it's built this way:**
+- Two forecasts that are wrong in different ways can partly cancel out. If one is too far north and the other too far south, the point between them is closer than either. Real forecast centres lean on this heavily.
+- It has nothing to fit, so it adds no settings that could be tuned to the storms. It's an even split, not a weighted one, because a fitted weight would be one more thing to choose.
+- Each member's forecasts are already out of fold, so their average is too.
+- Latitude and longitude are averaged separately. That isn't exactly the midpoint on a sphere, but the difference is tiny between points a few hundred km apart in the tropics, and this basin is nowhere near the date line.
+- A case missing a member stops the run. Otherwise it would quietly become the other member's forecast under this name.
+- It reads only the scoring format, so it imports nothing but the column names from `scoring.py`.
+
+**Tests:** `tests/test_consensus.py`.
+
+**Reused by:** notebook 04, and Project 3 can use it to average AI models.
+
 ## cv.py
 
 **What it does:** runs any model through cross-validation, and measures how far to trust the result.
