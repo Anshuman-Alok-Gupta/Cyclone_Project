@@ -151,6 +151,7 @@ The project decisions behind these modules are in `CLAUDE.md`.
 - `great_circle_km(lat1, lon1, lat2, lon2)` returns the haversine distance, on a sphere of radius 6371.0 km. It takes numbers or whole columns.
 - `score(forecasts, truth)` takes forecasts with `model`, `SID`, `init_time`, `lead_h`, `lat`, `lon` and truth with `SID`, `valid_time`, `lat`, `lon`. It returns every forecast plus `valid_time`, `truth_lat`, `truth_lon` and `error_km`, and prints how many had no truth for each model.
 - `summarize(scored, homogeneous=True)` returns `count`, `mean_km` and `median_km` by `model` and `lead_h`.
+- `skill(summary, reference)` returns each model's percentage improvement in mean error over a reference model, by lead time. Positive is better.
 
 **Why it's built this way:**
 - It stands alone so Project 3 can score GraphCast and Pangu with the same code. A test fails if it ever imports anything other than numpy and pandas.

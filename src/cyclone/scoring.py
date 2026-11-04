@@ -145,3 +145,21 @@ def summarize(scored: pd.DataFrame, homogeneous: bool = True) -> pd.DataFrame:
         count="count", mean_km="mean", median_km="median"
     )
     return summary.reset_index()
+
+
+def skill(summary: pd.DataFrame, reference: str) -> pd.DataFrame:
+    """Return each model's percentage improvement in mean error over a reference model.
+
+    Positive means better than the reference, and negative means worse. 10 means the
+    model's mean error is 10% smaller. It's only fair on identical cases, so pass a
+    table from ``summarize`` with homogeneous=True.
+
+    Args:
+        summary: the table from ``summarize``.
+        reference: the model to compare against, as named in the model column.
+
+    Returns:
+        One row per lead time and one column per model other than the reference.
+    """
+    mean_km = summary.pivot(index="lead_h", columns="model", values="mean_km")
+    return 100 * (1 - mean_km.drop(columns=reference).div(mean_km[reference], axis=0))

@@ -12,7 +12,7 @@ import pandas as pd
 import pytest
 
 from cyclone import scoring
-from cyclone.scoring import great_circle_km, score, summarize
+from cyclone.scoring import great_circle_km, score, skill, summarize
 
 KM_PER_DEGREE = 111.19
 T0 = pd.Timestamp("2014-10-09 00:00")
@@ -138,3 +138,17 @@ def test_scoring_imports_nothing_else_from_the_package():
         elif isinstance(node, ast.ImportFrom):
             imported.add((node.module or "").split(".")[0])
     assert imported == {"numpy", "pandas"}
+
+
+def test_skill_is_the_percentage_improvement_on_the_reference():
+    summary = pd.DataFrame(
+        {
+            "model": ["cliper", "better", "worse"],
+            "lead_h": [24, 24, 24],
+            "mean_km": [100.0, 80.0, 110.0],
+        }
+    )
+    result = skill(summary, reference="cliper")
+    assert list(result.columns) == ["better", "worse"]
+    assert result.loc[24, "better"] == pytest.approx(20.0)
+    assert result.loc[24, "worse"] == pytest.approx(-10.0)
