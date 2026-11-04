@@ -50,11 +50,15 @@ This is Project 1 of 3, leading to benchmarking AI weather models (GraphCast, Pa
 - **No future information.** A model input may only use information available at the forecast start time (t0):
   JTWC fixes at t0 and earlier. Never anything after t0.
 - **No IBTrACS derived columns.** Never use IBTrACS's derived columns (`STORM_SPEED`, `STORM_DIR`, `DIST2LAND`,
-  `LANDFALL`, etc.) as inputs unless they're verified as JTWC-based and free of future information.
+  etc.) as inputs unless they're verified as JTWC-based and free of future information.
   Calculate motion from `USA_LAT`/`USA_LON` at the current and previous fixes.
   - Why: `STORM_SPEED`/`STORM_DIR` are a centred difference of the combined `LAT`/`LON`, so they use the position 3 h
     after t0. `DIST2LAND` uses no future data but also follows the combined position, so it's recomputed from
     `USA_LAT`/`USA_LON` in the features step. Evidence is in `docs/components.md`.
+- **`LANDFALL` is permanently banned.** Never use it as an input. The "unless verified" exception above doesn't apply.
+  - Why: it looks ahead. Tested on 2026-11-04, it matches min(distance to land now, at the next point) for 81.4% of
+    rows against 47.4% for the current distance alone, and in 8,774 of 16,696 rows it's smaller than the current
+    distance to land.
 - **Match fixes by timestamp.** The cleaned data has 4 storms with a 12 h gap, where an interpolated fix was removed
   (3 in train, 1 in test). Never assume consecutive rows are 6 h apart; always match fixes by timestamp.
 - **Scope wording for results:** "JTWC-warned systems in the North Indian Ocean", not all depressions.
