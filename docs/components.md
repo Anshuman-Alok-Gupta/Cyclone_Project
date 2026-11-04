@@ -123,6 +123,28 @@ The project decisions behind these modules are in `CLAUDE.md`.
 
 **Reused by:** baselines, XGBoost and the LSTM. Using the same start times is what makes their scores comparable.
 
+## scoring.py
+
+**What it does:** measures how far any forecast position was from the truth, in km, and summarizes that by model and lead time. It imports nothing else from this package.
+
+**Inputs and outputs:**
+- `great_circle_km(lat1, lon1, lat2, lon2)` returns the haversine distance, on a sphere of radius 6371.0 km. It takes numbers or whole columns.
+- `score(forecasts, truth)` takes forecasts with `model`, `SID`, `init_time`, `lead_h`, `lat`, `lon` and truth with `SID`, `valid_time`, `lat`, `lon`. It returns every forecast plus `valid_time`, `truth_lat`, `truth_lon` and `error_km`, and prints how many had no truth for each model.
+- `summarize(scored, homogeneous=True)` returns `count`, `mean_km` and `median_km` by `model` and `lead_h`.
+
+**Why it's built this way:**
+- It stands alone so Project 3 can score GraphCast and Pangu with the same code. A test fails if it ever imports anything other than numpy and pandas.
+- Great-circle distance is needed because a degree of longitude shrinks away from the equator: 111 km at the equator, 96 km at 30°N.
+- A forecast with no truth stays in the table with a blank `error_km`. Dropping it would hide a model that lost half its cases. Having some is normal, since the storm may have ended or left the basin. `summarize` leaves them out of the averages, because they can't be judged right or wrong.
+- A repeated forecast, a forecast with no position and a repeated truth time all stop the run. Each would otherwise change the score with no visible sign.
+- `homogeneous=True` keeps only the cases every model has. Otherwise a model could look better just by skipping hard storms. Leave it on when comparing models.
+- A model with no scored cases at all still counts towards "every model", so it empties the table rather than quietly dropping out of the comparison.
+- Times can arrive as text or in any precision, since AI-model output won't match this project's tables.
+
+**Tests:** `tests/test_scoring.py`. Install pytest with `pip install -e ".[dev]"`, then run `pytest`. It's a dev dependency so Colab and Kaggle never install it.
+
+**Reused by:** every model in this project, and the AI models in Project 3.
+
 ## plotting.py
 
 **What it does:** draws one storm's track on a map, with dots coloured by wind.
