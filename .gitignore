@@ -8,3 +8,6 @@ data/processed/
 # Python / Jupyter caches
 __pycache__/
 .ipynb_checkpoints/
+
+# Created by pip install -e .
+*.egg-info/

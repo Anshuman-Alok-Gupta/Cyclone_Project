@@ -4,6 +4,7 @@
 # Exact local versions are in requirements-lock-windows.txt.
 numpy>=2.0
 pandas>=2.2.2
+pyarrow>=16.0
 matplotlib>=3.9
 cartopy>=0.24
 scikit-learn>=1.5
