@@ -1,8 +1,8 @@
-"""Draw one storm's track on a map, as a quick visual check of the data.
+"""Draw tracks, forecasts and error charts, as visual checks of data and results.
 
 Numbers can pass every check and still be wrong in ways a map shows at once: a
-position in the wrong hemisphere, a jump across the ocean, a storm far from where
-it's known to have gone.
+position in the wrong hemisphere, a jump across the ocean, a forecast heading the
+wrong way.
 """
 
 import cartopy.crs as ccrs
@@ -32,6 +32,11 @@ TEXT_COLOR = "#0b0b0b"
 MUTED_TEXT_COLOR = "#52514e"
 
 MAP_PADDING_DEG = 4
+
+# One fixed colour per model, so a model looks the same on every chart even when
+# another is added or left out. Add new models here rather than cycling colours.
+MODEL_LABELS = {"persistence": "Persistence", "cliper": "CLIPER"}
+MODEL_COLORS = {"persistence": "#2a78d6", "cliper": "#eb6834"}
 
 
 def _select_storm(
@@ -67,6 +72,19 @@ def _select_storm(
     return storm
 
 
+def _draw_base_map(ax: Axes, extent: list[float]) -> None:
+    """Draw the ocean, land, coast and grid that every map here shares."""
+    ax.set_extent(extent, crs=ccrs.PlateCarree())
+    ax.set_facecolor(OCEAN_COLOR)
+    ax.add_feature(cfeature.LAND.with_scale("50m"), facecolor=LAND_COLOR, edgecolor="none")
+    ax.add_feature(cfeature.COASTLINE.with_scale("50m"), edgecolor=COAST_COLOR, linewidth=0.6)
+    gridlines = ax.gridlines(draw_labels=True, color=GRID_COLOR, linewidth=0.5)
+    gridlines.top_labels = False
+    gridlines.right_labels = False
+    gridlines.xlabel_style = {"size": 9, "color": MUTED_TEXT_COLOR}
+    gridlines.ylabel_style = {"size": 9, "color": MUTED_TEXT_COLOR}
+
+
 def _square_extent(lat: pd.Series, lon: pd.Series) -> list[float]:
     """Return map limits centred on the track, equally wide and tall in degrees.
 
@@ -80,10 +98,16 @@ def _square_extent(lat: pd.Series, lon: pd.Series) -> list[float]:
     return [lon_mid - half_size, lon_mid + half_size, lat_mid - half_size, lat_mid + half_size]
 
 
-def _label_point(ax: Axes, row: pd.Series, text: str, offset: tuple[int, int]) -> None:
+def _label_point(
+    ax: Axes,
+    lon: float,
+    lat: float,
+    text: str,
+    offset: tuple[int, int],
+) -> None:
     ax.annotate(
         text,
-        xy=(row["USA_LON"], row["USA_LAT"]),
+        xy=(lon, lat),
         xytext=offset,
         textcoords="offset points",
         fontsize=9,
@@ -130,15 +154,7 @@ def plot_track(
             layout="constrained",
         )
 
-    ax.set_extent(_square_extent(lat, lon), crs=ccrs.PlateCarree())
-    ax.set_facecolor(OCEAN_COLOR)
-    ax.add_feature(cfeature.LAND.with_scale("50m"), facecolor=LAND_COLOR, edgecolor="none")
-    ax.add_feature(cfeature.COASTLINE.with_scale("50m"), edgecolor=COAST_COLOR, linewidth=0.6)
-    gridlines = ax.gridlines(draw_labels=True, color=GRID_COLOR, linewidth=0.5)
-    gridlines.top_labels = False
-    gridlines.right_labels = False
-    gridlines.xlabel_style = {"size": 9, "color": MUTED_TEXT_COLOR}
-    gridlines.ylabel_style = {"size": 9, "color": MUTED_TEXT_COLOR}
+    _draw_base_map(ax, _square_extent(lat, lon))
 
     ax.plot(lon, lat, color=LINE_COLOR, linewidth=1, transform=ccrs.PlateCarree(), zorder=3)
 
@@ -173,8 +189,12 @@ def plot_track(
 
     # Label only the moments that matter. A number on every dot would be unreadable.
     first, last = storm.iloc[0], storm.iloc[-1]
-    _label_point(ax, first, f"Start {first['ISO_TIME']:%d %b %H}Z", (-14, -14))
-    _label_point(ax, last, f"End {last['ISO_TIME']:%d %b %H}Z", (14, 14))
+    _label_point(
+        ax, first["USA_LON"], first["USA_LAT"], f"Start {first['ISO_TIME']:%d %b %H}Z", (-14, -14)
+    )
+    _label_point(
+        ax, last["USA_LON"], last["USA_LAT"], f"End {last['ISO_TIME']:%d %b %H}Z", (14, 14)
+    )
     if wind.notna().any():
         peak = storm.loc[wind.idxmax()]
         # Place the label off to the side of the track, not along it. On an east-west
@@ -182,7 +202,8 @@ def plot_track(
         runs_east_west = lon.max() - lon.min() > lat.max() - lat.min()
         _label_point(
             ax,
-            peak,
+            peak["USA_LON"],
+            peak["USA_LAT"],
             f"Peak {peak['USA_WIND']:.0f} kt, {peak['ISO_TIME']:%d %b %H}Z",
             (-4, 24) if runs_east_west else (16, 0),
         )
@@ -193,4 +214,172 @@ def plot_track(
         color=TEXT_COLOR,
         loc="left",
     )
+    return ax
+
+
+def plot_error_by_lead(summary: pd.DataFrame, title: str, ax: Axes | None = None) -> Axes:
+    """Plot mean track error against lead time, one line per model.
+
+    The y axis starts at 0 km, so the gap between lines reads as its true share of the
+    error. Only the last value on each line is printed; the table has the rest.
+
+    Args:
+        summary: the table from ``scoring.summarize``.
+        title: the chart title, which should say which storms and split it covers.
+        ax: an existing axes to draw on. Leave it out to create a new figure.
+
+    Returns:
+        The axes, so a caller can add to it or save it.
+    """
+    if ax is None:
+        _, ax = plt.subplots(figsize=(8, 5), layout="constrained")
+    ax.set_facecolor(OCEAN_COLOR)
+    ax.figure.set_facecolor(OCEAN_COLOR)
+
+    for model, rows in summary.groupby("model", sort=False):
+        rows = rows.sort_values("lead_h")
+        ax.plot(
+            rows["lead_h"],
+            rows["mean_km"],
+            color=MODEL_COLORS[model],
+            linewidth=2,
+            marker="o",
+            markersize=8,
+            markeredgecolor=OCEAN_COLOR,  # a ring keeps the dot clear of the other line
+            markeredgewidth=2,
+            label=MODEL_LABELS[model],
+        )
+        last = rows.iloc[-1]
+        ax.annotate(
+            f"{last['mean_km']:,.0f} km",
+            xy=(last["lead_h"], last["mean_km"]),
+            xytext=(10, 0),
+            textcoords="offset points",
+            fontsize=10,
+            color=TEXT_COLOR,
+            va="center",
+        )
+
+    leads = sorted(summary["lead_h"].unique())
+    ax.set_xticks(leads, [f"+{lead} h" for lead in leads])
+    ax.set_xlim(leads[0] - 6, leads[-1] + 10)  # room for the end labels
+    ax.set_ylim(bottom=0)
+    ax.set_ylabel("Mean great-circle error (km)", color=MUTED_TEXT_COLOR, fontsize=10)
+    ax.set_xlabel("Forecast lead time", color=MUTED_TEXT_COLOR, fontsize=10)
+    ax.tick_params(colors=MUTED_TEXT_COLOR, labelsize=10, length=0)
+    ax.grid(axis="y", color=GRID_COLOR, linewidth=0.8)
+    ax.set_axisbelow(True)
+    for side in ("top", "right", "left"):
+        ax.spines[side].set_visible(False)
+    ax.spines["bottom"].set_color(COAST_COLOR)
+    ax.legend(loc="upper left", fontsize=10, frameon=False, labelcolor=TEXT_COLOR)
+    ax.set_title(title, fontsize=12, color=TEXT_COLOR, loc="left")
+    return ax
+
+
+def plot_forecasts(
+    truth: pd.DataFrame,
+    forecasts: pd.DataFrame,
+    sid: str,
+    init_time: pd.Timestamp,
+    title: str,
+    ax: Axes | None = None,
+) -> Axes:
+    """Map one storm's true track with each model's forecast from one start time.
+
+    The true track is a dark neutral rather than the wind colours of ``plot_track``.
+    Those are blue, and would be hard to tell from the blue persistence line.
+
+    Args:
+        truth: the table from ``samples.make_truth``.
+        forecasts: forecasts in the scoring format, holding any number of models.
+        sid: the IBTrACS storm ID.
+        init_time: the forecast start time, which must be a fix of this storm.
+        title: the map title.
+        ax: an existing map axes. It must use a cartopy projection. Leave it out
+            to create a new figure.
+
+    Returns:
+        The map axes, so a caller can add to it or save it.
+    """
+    track = truth[truth["SID"] == sid].sort_values("valid_time")
+    chosen = forecasts[(forecasts["SID"] == sid) & (forecasts["init_time"] == init_time)]
+    start = track[track["valid_time"] == init_time]
+    if start.empty:
+        raise ValueError(f"Storm {sid} has no fix at {init_time}.")
+    if chosen.empty:
+        raise ValueError(f"No forecasts for storm {sid} from {init_time}.")
+    start = start.iloc[0]
+
+    if ax is None:
+        _, ax = plt.subplots(
+            figsize=(8, 7),
+            subplot_kw={"projection": ccrs.PlateCarree()},
+            layout="constrained",
+        )
+
+    # Fit the map to the forecasts too, since a bad one can leave the storm's track.
+    every_lat = pd.concat([track["lat"], chosen["lat"]])
+    every_lon = pd.concat([track["lon"], chosen["lon"]])
+    _draw_base_map(ax, _square_extent(every_lat, every_lon))
+
+    transform = ccrs.PlateCarree()
+    ax.plot(
+        track["lon"],
+        track["lat"],
+        color=TEXT_COLOR,
+        linewidth=2,
+        marker="o",
+        markersize=4,
+        transform=transform,
+        zorder=3,
+        label="JTWC track",
+    )
+
+    for model, rows in chosen.groupby("model", sort=False):
+        rows = rows.sort_values("lead_h")
+        ax.plot(
+            [start["lon"], *rows["lon"]],
+            [start["lat"], *rows["lat"]],
+            color=MODEL_COLORS[model],
+            linewidth=2,
+            marker="o",
+            markersize=8,
+            markevery=list(range(1, len(rows) + 1)),  # the shared start gets its own marker
+            markeredgecolor=OCEAN_COLOR,
+            markeredgewidth=2,
+            transform=transform,
+            zorder=4,
+            label=MODEL_LABELS[model],
+        )
+
+    def mark_fix(lon: float, lat: float) -> None:
+        ax.plot(
+            lon,
+            lat,
+            marker="o",
+            markersize=9,
+            markerfacecolor=TEXT_COLOR,
+            markeredgecolor=OCEAN_COLOR,
+            markeredgewidth=2,
+            transform=transform,
+            zorder=5,
+        )
+
+    # Mark the truth at each lead time, so the eye can pair it with a forecast dot.
+    # The labels stand well off the track with a leader line: right beside a true
+    # position they'd land next to a forecast dot and appear to name that dot instead.
+    for lead_h in sorted(chosen["lead_h"].unique()):
+        valid_time = init_time + pd.Timedelta(hours=int(lead_h))
+        fix = track[track["valid_time"] == valid_time]
+        if fix.empty:
+            continue
+        lon, lat = fix["lon"].iloc[0], fix["lat"].iloc[0]
+        mark_fix(lon, lat)
+        _label_point(ax, lon, lat, f"True +{lead_h} h", (26, 42))
+
+    mark_fix(start["lon"], start["lat"])
+    _label_point(ax, start["lon"], start["lat"], f"Start {init_time:%d %b %H}Z", (24, 26))
+    ax.legend(loc="lower left", fontsize=9, frameon=False)
+    ax.set_title(title, fontsize=12, color=TEXT_COLOR, loc="left")
     return ax

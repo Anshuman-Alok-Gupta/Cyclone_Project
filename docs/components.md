@@ -175,9 +175,12 @@ Mean error on the validation split, on identical cases:
 
 ## plotting.py
 
-**What it does:** draws one storm's track on a map, with dots coloured by wind.
+**What it does:** draws storm tracks, forecasts and error charts as visual checks.
 
-**Inputs and outputs:** `plot_track(df, sid=...)` or `plot_track(df, name=..., season=...)` takes a table and returns the map axes.
+**Inputs and outputs:**
+- `plot_track(df, sid=...)` or `plot_track(df, name=..., season=...)` takes a table and returns a map, with dots coloured by wind.
+- `plot_error_by_lead(summary, title)` takes the table from `scoring.summarize` and returns a chart of mean error against lead time.
+- `plot_forecasts(truth, forecasts, sid, init_time, title)` returns a map of one storm's true track with each model's forecast from one start time.
 
 **Why it's built this way:**
 - A map shows position errors that counts can't.
@@ -186,8 +189,12 @@ Mean error on the validation split, on identical cases:
 - Name lookup handles joined names like `HIKAA:HIKKA`. If a name matches several storms, as `UNNAMED` often does, it lists their SIDs instead of guessing.
 - It accepts an existing `ax`, so several tracks can share one figure.
 - cartopy downloads coastline files the first time it runs, so that first plot needs internet.
+- Each model has one fixed colour in `MODEL_COLORS`, so it looks the same on every chart. A new model needs an entry there and in `MODEL_LABELS`.
+- `plot_forecasts` draws the truth in a dark neutral, not the wind colours, because those are blue and would be hard to tell from the blue persistence line.
+- Its lead-time labels stand off the track on leader lines. Placed beside a true position, they land next to a forecast dot and appear to name that dot.
+- The error chart's y axis starts at 0 km, so the gap between lines reads as its true share of the error.
 
-**Reused by:** forecast error checks, by drawing forecast positions on the returned axes. Project 3 can use the same approach to compare AI-model tracks.
+**Reused by:** `plot_forecasts` and `plot_error_by_lead` work for any model in the scoring format, including the AI-model tracks in Project 3.
 
 ## Before building features
 
