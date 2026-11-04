@@ -24,6 +24,7 @@ TINY_SETTINGS = {
     "subsample": 1.0,
     "n_estimators": 5,
 }
+SEEDED_SETTINGS = {**TINY_SETTINGS, "subsample": 0.6}
 
 
 def test_the_search_for_cross_validation_includes_the_number_of_trees():
@@ -195,6 +196,84 @@ def test_final_models_reload_with_identical_forecasts(rows, truth, tmp_path):
     tm.assert_frame_equal(
         xgb_model.predict_xgboost(models, rows),
         xgb_model.predict_xgboost(reloaded, rows),
+    )
+
+
+def test_the_averaged_seeds_are_the_five_agreed():
+    assert xgb_model.SEEDS == (42, 43, 44, 45, 46)
+
+
+def test_different_seeds_give_different_models(rows, truth):
+    # subsample is the random part. With every row used, a seed would change nothing.
+    first = xgb_model.fit_fixed(rows, truth, SEEDED_SETTINGS, "cpu", seed=42)
+    second = xgb_model.fit_fixed(rows, truth, SEEDED_SETTINGS, "cpu", seed=43)
+    a = xgb_model.predict_xgboost(first, rows)
+    b = xgb_model.predict_xgboost(second, rows)
+    assert not a["lat"].equals(b["lat"])
+
+
+def test_one_seed_is_the_same_forecast_as_before_seeds_were_averaged(rows, truth):
+    # The search still runs on one seed, so its results must not move.
+    alone = xgb_model.fit_fixed(rows, truth, SEEDED_SETTINGS, "cpu")
+    forecaster = xgb_model.xgboost_forecaster(SEEDED_SETTINGS, "cpu")
+    tm.assert_frame_equal(
+        forecaster(rows, truth, rows),
+        xgb_model.predict_xgboost(alone, rows),
+    )
+
+
+def test_predict_seeds_averages_each_seeds_positions(rows, truth):
+    fitted = xgb_model.fit_seeds(rows, truth, SEEDED_SETTINGS, "cpu", seeds=(42, 43, 44))
+    runs = [xgb_model.predict_xgboost(models, rows) for models in fitted.values()]
+    averaged = xgb_model.predict_seeds(fitted, rows)
+
+    assert list(fitted) == [42, 43, 44]
+    assert averaged.columns.tolist() == FORECAST_COLUMNS
+    assert averaged["lat"].to_numpy() == pytest.approx(
+        sum(run["lat"].to_numpy() for run in runs) / 3
+    )
+    assert averaged["lon"].to_numpy() == pytest.approx(
+        sum(run["lon"].to_numpy() for run in runs) / 3
+    )
+
+
+def test_xgboost_forecaster_averages_the_seeds_it_is_given(rows, truth):
+    seeds = (42, 43)
+    averaged = xgb_model.xgboost_forecaster(SEEDED_SETTINGS, "cpu", seeds)(rows, truth, rows)
+    singles = [
+        xgb_model.xgboost_forecaster(SEEDED_SETTINGS, "cpu", (seed,))(rows, truth, rows)
+        for seed in seeds
+    ]
+    assert averaged["lat"].to_numpy() == pytest.approx(
+        (singles[0]["lat"].to_numpy() + singles[1]["lat"].to_numpy()) / 2
+    )
+
+
+def test_residual_forecaster_averages_the_seeds_it_is_given(rows, truth):
+    seeds = (42, 43)
+    averaged = xgb_model.residual_forecaster(SEEDED_SETTINGS, "cpu", seeds)(rows, truth, rows)
+    singles = [
+        xgb_model.residual_forecaster(SEEDED_SETTINGS, "cpu", (seed,))(rows, truth, rows)
+        for seed in seeds
+    ]
+    assert (averaged["model"] == xgb_model.RESIDUAL_NAME).all()
+    assert averaged["lon"].to_numpy() == pytest.approx(
+        (singles[0]["lon"].to_numpy() + singles[1]["lon"].to_numpy()) / 2
+    )
+
+
+def test_changing_a_blocks_truth_leaves_its_five_seed_forecasts_unchanged(rows, truth):
+    held_out = rows["fold"].iloc[0]
+    storms = rows.loc[rows["fold"] == held_out, "SID"].unique()
+    corrupted = truth.copy()
+    corrupted.loc[corrupted["SID"].isin(storms), ["lat", "lon"]] += 7.0
+
+    forecaster = xgb_model.xgboost_forecaster(SEEDED_SETTINGS, "cpu", xgb_model.SEEDS)
+    clean = cv.out_of_fold(rows, truth, forecaster)
+    changed = cv.out_of_fold(rows, corrupted, forecaster)
+    tm.assert_frame_equal(
+        clean[clean["fold"] == held_out].reset_index(drop=True),
+        changed[changed["fold"] == held_out].reset_index(drop=True),
     )
 
 

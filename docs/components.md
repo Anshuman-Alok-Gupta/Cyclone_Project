@@ -286,7 +286,8 @@ Mean error on the validation split, on identical cases:
 **Inputs and outputs:**
 - `search_cv(rows, truth, make_forecaster)` tries 20 combinations under cross-validation, and returns a table of them, best first.
 - `fit_fixed(rows, truth, settings, device, base=None)` fits the six models on exactly the rows given, keeping every tree. With `base`, the target is the truth minus that forecast.
-- `xgboost_forecaster(settings, device)` and `residual_forecaster(settings, device)` return the two models in the form `cv.out_of_fold` takes.
+- `fit_seeds(rows, truth, settings, device, base=None, seeds=SEEDS)` fits one set of six models per seed, and `predict_seeds(fitted, features, name, base=None)` returns the average of their forecasts.
+- `xgboost_forecaster(settings, device, seeds)` and `residual_forecaster(settings, device, seeds)` return the two models in the form `cv.out_of_fold` takes. One seed is the default, for the search. Pass `SEEDS` to measure a model.
 - `fit_final(rows, truth, settings, device)` refits chosen settings on all of 1980–2017.
 - `predict_xgboost(models, features, name, base=None)` returns forecasts in the format `scoring.score` takes.
 - `search(features, truth)` and `fit_models(features, truth, settings, device)` are the older route, for notebook 03.
@@ -313,6 +314,8 @@ Mean error on the validation split, on identical cases:
 - One count is used for all six models. Early stopping used to give each its own, and the longer leads stopped sooner, so this may suit some leads better than others.
 - `search_cv` judges each combination on the mean error over every out-of-fold case, so every case counts once and the score is the same one models are compared on later. The relative-error rule is unchanged.
 - `search_cv` takes about 5 minutes on this laptop's CPU, so with `checkpoint` set it writes its results after every combination. Resuming has to be asked for with `resume=True`. If it happened by itself, a rerun after a change to the data would quietly reuse old results.
+- A measured model is the average of 5 seeds' forecasts (42–46). Training has a random part, because `subsample` gives each tree a random share of the rows, so one seed's forecast is partly luck. Averaging cancels much of it, and leaves no room to pick a kind seed. CLIPER has no random part, so every seed in `xgb_residual` corrects the same CLIPER forecast.
+- The search stays on one seed, since it fits 20 combinations. So a setting chosen with seed 42 is measured with all five.
 - `fit_final` filters to the development seasons itself, so passing the full table can't reach test. It can't be scored on these storms, since it has seen them all, so the cross-validated score stands in for it until the test split.
 
 **xgb_residual** predicts CLIPER's error and adds it to CLIPER's forecast, so it starts from a sensible answer and only has to learn what a straight line can't.

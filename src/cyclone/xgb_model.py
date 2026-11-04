@@ -26,6 +26,10 @@ Test is never read in either, so it stays a fair exam for the end of Project 1.
 There are also two targets. Plain XGBoost predicts the change in position. xgb_residual
 predicts CLIPER's error and adds that to CLIPER's forecast, so it starts from a sensible
 answer and only has to learn what a straight line can't.
+
+Under cross-validation and in the final models, a forecast is the average of several
+seeds. ``fit_seeds`` fits one set of six models per seed and ``predict_seeds`` averages
+them, so the number being compared isn't partly the luck of one seed.
 """
 
 from collections.abc import Callable
@@ -50,6 +54,16 @@ COMPONENTS = ("dlat", "dlon")
 # Fixes both the choice of settings to try and the random parts of training, so the
 # same data and the same device give the same models.
 SEED = 42
+
+# The seeds averaged for a measured or final forecast. Training has a random part here:
+# subsample gives each tree a random share of the rows. One seed's forecast is partly that
+# luck, and consensus's skill at +72 h moved between 2.1 and 2.4% from seed to seed.
+# Averaging cancels much of that out. Averaging forecasts, rather than picking a good
+# seed, gives the luck nowhere to hide.
+#
+# The settings search stays on SEED alone, since it fits 20 combinations. A setting chosen
+# with one seed is then measured with all five.
+SEEDS = (42, 43, 44, 45, 46)
 
 # Settings tried, out of the 180 possible combinations below. Sampling at random covers
 # the range better than a small grid, which would try few values of each setting.
@@ -202,6 +216,7 @@ def fit_fixed(
     settings: dict,
     device: str,
     base: pd.DataFrame | None = None,
+    seed: int = SEED,
 ) -> dict[tuple[int, str], xgb.XGBRegressor]:
     """Fit the six models on exactly the rows given, with no early stopping.
 
@@ -215,6 +230,7 @@ def fit_fixed(
         device: "cpu" or "cuda", from ``pick_device``.
         base: another model's forecasts for these rows. If given, the target is the
             truth minus that forecast, rather than the truth minus the position at t0.
+        seed: fixes the random part of training.
 
     Returns:
         {(lead_h, component): fitted model}, to pass to ``predict_xgboost``.
@@ -233,11 +249,35 @@ def fit_fixed(
                 objective="reg:squarederror",
                 tree_method="hist",
                 device=device,
-                random_state=SEED,
+                random_state=seed,
             )
             model.fit(cases[FEATURE_COLUMNS], targets[component])
             models[(lead_h, component)] = model
     return models
+
+
+def fit_seeds(
+    rows: pd.DataFrame,
+    truth: pd.DataFrame,
+    settings: dict,
+    device: str,
+    base: pd.DataFrame | None = None,
+    seeds: tuple[int, ...] = SEEDS,
+) -> dict[int, dict[tuple[int, str], xgb.XGBRegressor]]:
+    """Fit one set of six models per seed, on the same rows and settings.
+
+    Args:
+        rows: the start times to learn from.
+        truth: the table from ``samples.make_truth``.
+        settings: one combination from ``sample_cv_settings``.
+        device: "cpu" or "cuda", from ``pick_device``.
+        base: as in ``fit_fixed``.
+        seeds: the seeds to fit.
+
+    Returns:
+        {seed: models}, to pass to ``predict_seeds``.
+    """
+    return {seed: fit_fixed(rows, truth, settings, device, base, seed) for seed in seeds}
 
 
 def predict_xgboost(
@@ -275,16 +315,55 @@ def predict_xgboost(
     return pd.concat(forecasts, ignore_index=True)
 
 
-def xgboost_forecaster(settings: dict, device: str) -> cv.Forecaster:
-    """Return plain XGBoost with these settings, in the form ``cv.out_of_fold`` takes."""
+def predict_seeds(
+    fitted: dict[int, dict[tuple[int, str], xgb.XGBRegressor]],
+    features: pd.DataFrame,
+    name: str = MODEL_NAME,
+    base: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """Return the average of each seed's forecast positions.
+
+    Latitude and longitude are averaged separately, as in ``consensus.consensus``.
+
+    Args:
+        fitted: the result of ``fit_seeds`` or ``fit_final``.
+        features: the start times to forecast. Pass only the split being scored.
+        name: the name to give these forecasts in the model column.
+        base: the forecasts the models were trained to correct, if any.
+
+    Returns:
+        Forecasts in the format ``scoring.score`` takes, at each lead time.
+    """
+    # Each run lists the same cases in the same order, so they can be averaged by position.
+    runs = [predict_xgboost(models, features, name, base) for models in fitted.values()]
+    return runs[0].assign(
+        lat=np.mean([run["lat"] for run in runs], axis=0),
+        lon=np.mean([run["lon"] for run in runs], axis=0),
+    )
+
+
+def xgboost_forecaster(
+    settings: dict,
+    device: str,
+    seeds: tuple[int, ...] = (SEED,),
+) -> cv.Forecaster:
+    """Return plain XGBoost with these settings, in the form ``cv.out_of_fold`` takes.
+
+    One seed is the default because that's what the search fits. Pass ``SEEDS`` to measure
+    a model.
+    """
 
     def forecast(learning: pd.DataFrame, truth: pd.DataFrame, held_out: pd.DataFrame) -> pd.DataFrame:
-        return predict_xgboost(fit_fixed(learning, truth, settings, device), held_out)
+        return predict_seeds(fit_seeds(learning, truth, settings, device, seeds=seeds), held_out)
 
     return forecast
 
 
-def residual_forecaster(settings: dict, device: str) -> cv.Forecaster:
+def residual_forecaster(
+    settings: dict,
+    device: str,
+    seeds: tuple[int, ...] = (SEED,),
+) -> cv.Forecaster:
     """Return xgb_residual with these settings, in the form ``cv.out_of_fold`` takes.
 
     CLIPER is fitted inside this function, on the learning rows only. Using CLIPER's
@@ -294,12 +373,15 @@ def residual_forecaster(settings: dict, device: str) -> cv.Forecaster:
     On the learning rows CLIPER is forecasting storms it was fitted on, so its errors
     there are a little smaller than on new storms. With only eight inputs per lead time
     and about two thousand rows, that difference is very small.
+
+    CLIPER has no random part, so every seed corrects the same CLIPER forecast.
     """
 
     def forecast(learning: pd.DataFrame, truth: pd.DataFrame, held_out: pd.DataFrame) -> pd.DataFrame:
         cliper = fit_cliper_on(learning, truth)
-        models = fit_fixed(learning, truth, settings, device, base=predict_cliper(cliper, learning))
-        return predict_xgboost(models, held_out, RESIDUAL_NAME, base=predict_cliper(cliper, held_out))
+        learning_base = predict_cliper(cliper, learning)
+        fitted = fit_seeds(learning, truth, settings, device, base=learning_base, seeds=seeds)
+        return predict_seeds(fitted, held_out, RESIDUAL_NAME, base=predict_cliper(cliper, held_out))
 
     return forecast
 
