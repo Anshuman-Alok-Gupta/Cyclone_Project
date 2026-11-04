@@ -186,13 +186,15 @@ The project decisions behind these modules are in `CLAUDE.md`.
 
 **Inputs and outputs:**
 - `great_circle_km(lat1, lon1, lat2, lon2)` returns the haversine distance, on a sphere of radius 6371.0 km. It takes numbers or whole columns.
-- `score(forecasts, truth)` takes forecasts with `model`, `SID`, `init_time`, `lead_h`, `lat`, `lon` and truth with `SID`, `valid_time`, `lat`, `lon`. It returns every forecast plus `valid_time`, `truth_lat`, `truth_lon` and `error_km`, and prints how many had no truth for each model.
+- `score(forecasts, truth, report=True)` takes forecasts with `model`, `SID`, `init_time`, `lead_h`, `lat`, `lon` and truth with `SID`, `valid_time`, `lat`, `lon`. It returns every forecast plus `valid_time`, `truth_lat`, `truth_lon` and `error_km`, and prints how many had no truth for each model.
+- `homogeneous_cases(scored)` returns the rows for the cases every model has.
 - `summarize(scored, homogeneous=True)` returns `count`, `mean_km` and `median_km` by `model` and `lead_h`.
 - `skill(summary, reference)` returns each model's percentage improvement in mean error over a reference model, by lead time. Positive is better.
 
 **Why it's built this way:**
 - It stands alone so Project 3 can score GraphCast and Pangu with the same code. A test fails if it ever imports anything other than numpy and pandas.
 - Great-circle distance is needed because a degree of longitude shrinks away from the equator: 111 km at the equator, 96 km at 30°N.
+- `report=False` stops `score` printing, because a settings search scores hundreds of times. It changes nothing else.
 - A forecast with no truth stays in the table with a blank `error_km`. Dropping it would hide a model that lost half its cases. Having some is normal, since the storm may have ended or left the basin. `summarize` leaves them out of the averages, because they can't be judged right or wrong.
 - A repeated forecast, a forecast with no position and a repeated truth time all stop the run. Each would otherwise change the score with no visible sign.
 - `homogeneous=True` keeps only the cases every model has. Otherwise a model could look better just by skipping hard storms. Leave it on when comparing models.
@@ -209,9 +211,11 @@ The project decisions behind these modules are in `CLAUDE.md`.
 
 **Inputs and outputs:**
 - `persistence(init_times)` extends the average motion from t0−12 h to t0 in a straight line, to +24, +48 and +72 h.
-- `fit_cliper(init_times, truth)` fits one linear regression per lead time and returns `{lead_h: model}`.
+- `fit_cliper_on(rows, truth)` fits one linear regression per lead time on exactly the rows it's given, and returns `{lead_h: model}`.
+- `fit_cliper(init_times, truth)` does that on the train split, for notebooks 02 and 03.
 - `predict_cliper(models, init_times)` returns CLIPER forecasts for the start times it's given.
 - `persistence` and `predict_cliper` both return tables in the format `scoring.score` takes.
+- `persistence_forecast` and `cliper_forecast` wrap them in the form `cv.out_of_fold` takes.
 
 **Why it's built this way:**
 - A score means little alone. "150 km at 24 h" is only useful next to what a simple method gets on the same cases.

@@ -87,7 +87,7 @@ def _cliper_inputs(init_times: pd.DataFrame) -> pd.DataFrame:
     number, 31 December (365) and 1 January (1) would look a year apart, not a day.
     USA_WIND is left out, so the 24 rows with no wind need no special handling.
     """
-    angle = 2 * np.pi * init_times["init_time"].dt.dayofyear / DAYS_PER_YEAR
+    angle = 2 * np.pi * init_times["init_time"].dt.day_of_year / DAYS_PER_YEAR
     return pd.DataFrame(
         {
             "lat": init_times["lat"],
@@ -102,11 +102,8 @@ def _cliper_inputs(init_times: pd.DataFrame) -> pd.DataFrame:
     )
 
 
-def fit_cliper(init_times: pd.DataFrame, truth: pd.DataFrame) -> dict[int, LinearRegression]:
-    """Fit one linear regression per lead time, on the train split only.
-
-    The train filter is inside this function, not left to the caller, so that passing
-    the full table can't leak validation or test storms into the fit.
+def fit_cliper_on(rows: pd.DataFrame, truth: pd.DataFrame) -> dict[int, LinearRegression]:
+    """Fit one linear regression per lead time, on exactly the rows it's given.
 
     Each model predicts the change in position (dlat, dlon), not the position itself.
     Change is what's similar from storm to storm. Absolute position would make the
@@ -116,17 +113,15 @@ def fit_cliper(init_times: pd.DataFrame, truth: pd.DataFrame) -> dict[int, Linea
     time. A single set of weights would force the 72 h fit to match the 24 h one.
 
     Args:
-        init_times: the table from ``samples.make_init_times``.
+        rows: the start times to learn from.
         truth: the table from ``samples.make_truth``.
 
     Returns:
         {lead_h: fitted model}, to pass to ``predict_cliper``.
     """
-    train = init_times[init_times["split"] == "train"]
-
     models = {}
     for lead_h in LEAD_HOURS:
-        cases = with_truth_at(train, truth, lead_h)
+        cases = with_truth_at(rows, truth, lead_h)
         targets = pd.DataFrame(
             {
                 "dlat": cases["truth_lat"] - cases["lat"],
@@ -134,7 +129,26 @@ def fit_cliper(init_times: pd.DataFrame, truth: pd.DataFrame) -> dict[int, Linea
             }
         )
         models[lead_h] = LinearRegression().fit(_cliper_inputs(cases), targets)
-        print(f"CLIPER +{lead_h} h: fitted on {len(cases):,} train cases")
+    return models
+
+
+def fit_cliper(init_times: pd.DataFrame, truth: pd.DataFrame) -> dict[int, LinearRegression]:
+    """Fit CLIPER on the train split only, for notebooks 02 and 03.
+
+    The train filter is inside this function, not left to the caller, so that passing
+    the full table can't leak validation or test storms into the fit.
+
+    Args:
+        init_times: the table from ``samples.make_init_times``.
+        truth: the table from ``samples.make_truth``.
+
+    Returns:
+        {lead_h: fitted model}, to pass to ``predict_cliper``.
+    """
+    train = init_times[init_times["split"] == "train"]
+    models = fit_cliper_on(train, truth)
+    for lead_h in LEAD_HOURS:
+        print(f"CLIPER +{lead_h} h: fitted on {len(with_truth_at(train, truth, lead_h)):,} train cases")
     return models
 
 
@@ -166,3 +180,21 @@ def predict_cliper(
             )
         )
     return pd.concat(forecasts, ignore_index=True)
+
+
+def persistence_forecast(
+    learning: pd.DataFrame,
+    truth: pd.DataFrame,
+    held_out: pd.DataFrame,
+) -> pd.DataFrame:
+    """Persistence, in the form ``cv.out_of_fold`` takes. It has nothing to learn."""
+    return persistence(held_out)
+
+
+def cliper_forecast(
+    learning: pd.DataFrame,
+    truth: pd.DataFrame,
+    held_out: pd.DataFrame,
+) -> pd.DataFrame:
+    """Fit CLIPER on the learning rows and forecast the held-out rows, for ``cv.out_of_fold``."""
+    return predict_cliper(fit_cliper_on(learning, truth), held_out)

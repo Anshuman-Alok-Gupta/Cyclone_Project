@@ -152,3 +152,12 @@ def test_skill_is_the_percentage_improvement_on_the_reference():
     assert list(result.columns) == ["better", "worse"]
     assert result.loc[24, "better"] == pytest.approx(20.0)
     assert result.loc[24, "worse"] == pytest.approx(-10.0)
+
+
+def test_report_off_prints_nothing_and_changes_nothing(capsys):
+    forecasts = make_forecasts([("m", "S1", T0, 24, 15.0, 85.0)])
+    truth = make_truth([("S1", T0 + pd.Timedelta(hours=24), 15.0, 86.0)])
+    quiet = score(forecasts, truth, report=False)
+    assert capsys.readouterr().out == ""
+    pd.testing.assert_frame_equal(quiet, score(forecasts, truth))
+    assert capsys.readouterr().out != ""

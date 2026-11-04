@@ -51,7 +51,7 @@ def _require_columns(table: pd.DataFrame, columns: list[str], name: str) -> None
         raise ValueError(f"{name} is missing columns {missing}. It needs {columns}.")
 
 
-def score(forecasts: pd.DataFrame, truth: pd.DataFrame) -> pd.DataFrame:
+def score(forecasts: pd.DataFrame, truth: pd.DataFrame, report: bool = True) -> pd.DataFrame:
     """Match each forecast to the truth at init_time + lead_h and add its error.
 
     Forecasts with no true position stay in the result with a blank error_km, and the
@@ -63,6 +63,8 @@ def score(forecasts: pd.DataFrame, truth: pd.DataFrame) -> pd.DataFrame:
     Args:
         forecasts: one row per forecast, with FORECAST_COLUMNS.
         truth: one row per storm and time, with TRUTH_COLUMNS.
+        report: print the count of scored forecasts. Turn it off in a search, which
+            scores hundreds of times.
 
     Returns:
         forecasts plus valid_time, truth_lat, truth_lon and error_km, one row for each
@@ -101,14 +103,32 @@ def score(forecasts: pd.DataFrame, truth: pd.DataFrame) -> pd.DataFrame:
         scored["lat"], scored["lon"], scored["truth_lat"], scored["truth_lon"]
     )
 
-    no_truth = scored["error_km"].isna().groupby(scored["model"]).sum()
-    total = scored.groupby("model").size()
-    for model in total.index:
-        print(
-            f"{model}: scored {total[model] - no_truth[model]:,} of {total[model]:,} "
-            f"forecasts; {no_truth[model]:,} had no matching truth"
-        )
+    if report:
+        no_truth = scored["error_km"].isna().groupby(scored["model"]).sum()
+        total = scored.groupby("model").size()
+        for model in total.index:
+            print(
+                f"{model}: scored {total[model] - no_truth[model]:,} of {total[model]:,} "
+                f"forecasts; {no_truth[model]:,} had no matching truth"
+            )
     return scored
+
+
+def homogeneous_cases(scored: pd.DataFrame) -> pd.DataFrame:
+    """Return the scored rows for the cases that every model in the table has.
+
+    Args:
+        scored: the table from ``score``.
+
+    Returns:
+        The rows with an error, for cases where all the models have one.
+    """
+    usable = scored.dropna(subset=["error_km"])
+    # Count models from scored, not usable: a model with no scored cases at all must
+    # still empty the table, not quietly stop being one of "every model".
+    n_models = scored["model"].nunique()
+    models_in_case = usable.groupby(CASE_COLUMNS)["model"].transform("nunique")
+    return usable[models_in_case == n_models]
 
 
 def summarize(scored: pd.DataFrame, homogeneous: bool = True) -> pd.DataFrame:
@@ -130,14 +150,10 @@ def summarize(scored: pd.DataFrame, homogeneous: bool = True) -> pd.DataFrame:
     usable = scored.dropna(subset=["error_km"])
 
     if homogeneous:
-        # Count models from scored, not usable: a model with no scored cases at all
-        # must still empty the table, not quietly stop being one of "every model".
-        n_models = scored["model"].nunique()
-        models_in_case = usable.groupby(CASE_COLUMNS)["model"].transform("nunique")
-        kept = usable[models_in_case == n_models]
+        kept = homogeneous_cases(scored)
         print(
             f"Homogeneous comparison: kept {len(kept):,} of {len(usable):,} scored "
-            f"forecasts, the cases all {n_models} models have."
+            f"forecasts, the cases all {scored['model'].nunique()} models have."
         )
         usable = kept
 
