@@ -85,7 +85,30 @@ The project decisions behind these modules are in `CLAUDE.md`.
 - It uses `SEASON`, not calendar year, so the two storms that cross New Year stay in one split.
 - The boundaries are three constants that nothing else repeats.
 
-**Reused by:** baselines, XGBoost, the LSTM and the scoring harness. Project 3 reports on the same test years so its scores compare directly.
+**Reused by:** notebooks 02 and 03, which keep the train and validation split so they still run. Model choice now uses `folds.py`. Project 3 reports on the same test years so its scores compare directly.
+
+## folds.py
+
+**What it does:** cuts the development seasons, 1980–2017, into the five blocks used for cross-validation.
+
+**Inputs and outputs:**
+- `FOLD_SEASONS` and `FOLD_NAMES` define the blocks: 1980–87, 1988–95, 1996–2003, 2004–10 and 2011–17.
+- `assign_fold(df)` takes any table with `SEASON` and returns a copy with a `fold` column. Seasons outside the blocks get `NOT_IN_A_FOLD`.
+- `add_fold(table, df)` does the same for a table with `SID`, such as the start times, looking up each storm's season in the cleaned table.
+- `development(table)` returns only the rows in a block.
+
+**Why it's built this way:**
+- It's a separate file because it does a different job from `splits.py`, and `splits.py` now only serves the older notebooks.
+- Blocks are whole, consecutive seasons, for the same reason the main split is by year: rows from one storm are nearly identical, and storms in one season share that season's weather.
+- A model can learn from seasons later than the ones it forecasts. That's fine for comparing models, because no storm's own future is involved. It's the one way this differs from the final test, which stays last in time.
+- It uses `SEASON`, not calendar year, so a storm that crosses New Year stays in one block.
+- `add_fold` stops the run on a storm in two blocks rather than picking one.
+- `development` keeps named blocks rather than dropping `NOT_IN_A_FOLD`, so a row with no fold at all stays out too.
+- The test seasons are in no block, so nothing that loops over the blocks can reach them.
+
+**Tests:** `tests/test_folds.py`. The rules are tested on a small made-up table, so they run anywhere. Tests on the real table skip if it hasn't been built.
+
+**Reused by:** every model comparison from here on, including the LSTM.
 
 ## checks.py
 
@@ -95,6 +118,7 @@ The project decisions behind these modules are in `CLAUDE.md`.
 - `check_expected(df)` takes the table with its `split` column. It prints a confirmation if all counts match. Otherwise it raises an `AssertionError` listing each difference and the likely causes.
 - `check_samples(init_times, truth)` does the same for the start times and for the cases with truth at each lead time.
 - `count_cases(init_times, truth)` returns those case counts as `{split: {lead_h: count}}`.
+- `check_folds(df, init_times, truth)` does the same for the cross-validation blocks. It also stops the run if a storm is in two blocks or a test season is in any block.
 - `check_dist_to_land(df, raw)` compares `features.distance_to_land_km` with IBTrACS `DIST2LAND` and prints the agreement. It stops the run only if the median gap passes 10 km, which would mean a broken calculation.
 
 **Why it's built this way:**
@@ -109,6 +133,19 @@ The project decisions behind these modules are in `CLAUDE.md`.
 | train | 3,203 | 2,515 | 1,869 | 1,324 |
 | val | 542 | 438 | 340 | 256 |
 | test | 933 | 749 | 578 | 430 |
+
+| Block | Storms | Init times | Cases +24 h | Cases +48 h | Cases +72 h |
+|---|---:|---:|---:|---:|---:|
+| 1980–87 | 39 | 598 | 452 | 324 | 218 |
+| 1988–95 | 44 | 774 | 617 | 465 | 325 |
+| 1996–2003 | 48 | 952 | 774 | 605 | 463 |
+| 2004–10 | 43 | 737 | 570 | 413 | 284 |
+| 2011–17 | 37 | 684 | 540 | 402 | 290 |
+| All | 211 | 3,745 | 2,953 | 2,209 | 1,580 |
+
+- These add up to the train and validation rows of the table above.
+- 201 of the 211 storms have a start time, and 194, 171 and 140 have a scored case at +24, +48 and +72 h. The rest are too short.
+- The expected counts are stored in block order, not by season, so `checks.py` doesn't repeat the boundaries.
 
 `DIST2LAND` is a sanity check only, never an input. It stays inside `check_dist_to_land`, and the cleaned table doesn't hold it. On the 2,645 rows where the JTWC and combined positions are within 10 km:
 

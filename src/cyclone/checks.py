@@ -9,8 +9,10 @@ import pandas as pd
 
 from cyclone.features import distance_to_land_km
 from cyclone.filters import FIRST_SEASON, LAST_SEASON, SYNOPTIC_HOURS, main_track
+from cyclone.folds import FOLD_NAMES, NOT_IN_A_FOLD, add_fold, assign_fold, development
 from cyclone.samples import LEAD_HOURS, with_truth_at
 from cyclone.scoring import great_circle_km
+from cyclone.splits import VAL_LAST_SEASON
 
 # Verified against IBTrACS v04r01 on 2026-11-04.
 EXPECTED_ROWS = 5_694
@@ -22,6 +24,16 @@ EXPECTED_CASES_BY_SPLIT = {
     "train": {24: 2_515, 48: 1_869, 72: 1_324},
     "val": {24: 438, 48: 340, 72: 256},
     "test": {24: 749, 48: 578, 72: 430},
+}
+
+# One number per block, in the order of folds.FOLD_SEASONS, so that this file doesn't repeat
+# the boundaries. Verified on 2026-11-04. They add up to the train and val counts above.
+EXPECTED_STORMS_BY_FOLD = (39, 44, 48, 43, 37)
+EXPECTED_INIT_TIMES_BY_FOLD = (598, 774, 952, 737, 684)
+EXPECTED_CASES_BY_FOLD = {
+    24: (452, 617, 774, 570, 540),
+    48: (324, 465, 605, 413, 402),
+    72: (218, 325, 463, 284, 290),
 }
 
 # DIST2LAND follows the combined position, so it's only comparable where JTWC's position
@@ -156,6 +168,60 @@ def check_samples(init_times: pd.DataFrame, truth: pd.DataFrame) -> None:
     for split, counts in case_counts.items():
         by_lead = ", ".join(f"+{lead_h} h {count:,}" for lead_h, count in counts.items())
         print(f"  {split:<5} {init_counts[split]:>5,} init times; cases {by_lead}")
+
+
+def _counts_by_fold(table: pd.DataFrame, count) -> tuple[int, ...]:
+    """Return one count per block, in FOLD_NAMES order, with 0 for an empty block."""
+    counts = development(table).groupby("fold").apply(count, include_groups=False)
+    return tuple(int(counts.get(name, 0)) for name in FOLD_NAMES)
+
+
+def check_folds(df: pd.DataFrame, init_times: pd.DataFrame, truth: pd.DataFrame) -> None:
+    """Raise an error explaining what differs if the blocks aren't the verified ones.
+
+    A block that quietly lost storms would still fit and still score. It would just
+    change every cross-validated number, with no sign of why.
+
+    Args:
+        df: the cleaned table.
+        init_times: the table from ``samples.make_init_times`` or ``features.build_features``.
+        truth: the table from ``samples.make_truth``.
+
+    Raises:
+        AssertionError: listing every count that differs, or any season in the wrong place.
+    """
+    folded = assign_fold(df)
+    rows = add_fold(init_times, df)
+
+    storms = _counts_by_fold(folded, lambda block: block["SID"].nunique())
+    starts = _counts_by_fold(rows, len)
+    cases = {
+        lead_h: _counts_by_fold(with_truth_at(rows, truth, lead_h), len) for lead_h in LEAD_HOURS
+    }
+
+    mismatches = []
+    if storms != EXPECTED_STORMS_BY_FOLD:
+        mismatches.append(f"storms: expected {EXPECTED_STORMS_BY_FOLD}, got {storms}")
+    if starts != EXPECTED_INIT_TIMES_BY_FOLD:
+        mismatches.append(f"init times: expected {EXPECTED_INIT_TIMES_BY_FOLD}, got {starts}")
+    if cases != EXPECTED_CASES_BY_FOLD:
+        mismatches.append(f"cases: expected {EXPECTED_CASES_BY_FOLD}, got {cases}")
+
+    in_a_block = folded[folded["fold"] != NOT_IN_A_FOLD]
+    if in_a_block["SEASON"].max() > VAL_LAST_SEASON:
+        mismatches.append(f"a season after {VAL_LAST_SEASON} is in a block: test must stay locked")
+    if (in_a_block.groupby("SID")["fold"].nunique() > 1).any():
+        mismatches.append("a storm is in two blocks")
+
+    if mismatches:
+        lines = ["Cross-validation blocks do not match the verified counts. Stop and resolve this."]
+        lines += ["Differences:"] + [f"  - {item}" for item in mismatches]
+        raise AssertionError("\n".join(lines))
+
+    print(f"Fold counts match: {sum(storms)} storms, {sum(starts):,} init times.")
+    for number, name in enumerate(FOLD_NAMES):
+        by_lead = ", ".join(f"+{lead_h} h {cases[lead_h][number]:,}" for lead_h in LEAD_HOURS)
+        print(f"  {name}  {storms[number]:>3} storms, {starts[number]:>4} init times; cases {by_lead}")
 
 
 def check_dist_to_land(df: pd.DataFrame, raw: pd.DataFrame) -> None:
