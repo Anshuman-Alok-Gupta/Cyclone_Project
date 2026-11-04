@@ -53,8 +53,15 @@ This is Project 1 of 3, leading to benchmarking AI weather models (GraphCast, Pa
   - Report skill against CLIPER with a 95% interval from a bootstrap of whole storms, not rows.
 - **The old train/val split stays only so notebooks 02–03 still run:** train up to and including 2012, validate 2013–2017.
   Don't use it to choose or compare models.
-- **Test (2018–2024) is scored once, at the end of Project 1,** after everything is fixed. It's in no block, and
+- **Test plan, decided on 2026-11-04 before anyone has seen test results.** Test (2018–2024) is in no block, and
   scoring it earlier or going back to change something after seeing it would turn it into a second validation set.
+  - The test split is scored exactly once, at the end of Project 1, after the LSTM and West Pacific pretraining steps.
+  - Primary result: the model with the best cross-validated relative error over 1980–2017 at that point, compared
+    with CLIPER. If two are within their cross-validation uncertainty, prefer the simpler one.
+  - Secondary results, reported alongside without changing the primary choice: persistence, CLIPER, XGBoost and consensus.
+  - Final models are refitted on all of 1980–2017 with the settings chosen by cross-validation. Any XGBoost member is
+    the average of 5 seeds, because single-seed results varied (consensus +72 h ranged 2.1–2.4% across seeds).
+  - Current leader (2026-11-04): consensus of CLIPER and XGBoost.
 - Scoring harness: great-circle error in km. It must be a standalone module that accepts any table of forecast positions, so it can score AI-model output in Project 3.
 
 ## Model input rules
