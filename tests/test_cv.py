@@ -273,6 +273,32 @@ def test_skill_by_fold_reports_each_block_separately():
     assert result.loc[(24, "second"), "model"] == pytest.approx(-10.0)
 
 
+def test_relative_error_compares_models_within_each_lead():
+    # "steady" is best overall. Dividing each model by its own smallest error instead
+    # would favour "flat", whose error barely grows with lead time.
+    summary = pd.DataFrame(
+        [
+            ("steady", 24, 100.0),
+            ("steady", 72, 400.0),
+            ("flat", 24, 300.0),
+            ("flat", 72, 450.0),
+        ],
+        columns=["model", "lead_h", "mean_km"],
+    )
+    result = cv.relative_error(summary, ["steady", "flat"])
+    assert result.index.tolist() == ["steady", "flat"]
+    assert result["steady"] == pytest.approx(1.0)
+    assert result["flat"] == pytest.approx((3.0 + 1.125) / 2)
+
+
+def test_relative_error_ignores_models_not_asked_about():
+    summary = pd.DataFrame(
+        [("a", 24, 100.0), ("b", 24, 110.0), ("baseline", 24, 50.0)],
+        columns=["model", "lead_h", "mean_km"],
+    )
+    assert cv.relative_error(summary, ["a", "b"]).to_dict() == pytest.approx({"a": 1.0, "b": 1.1})
+
+
 def test_storm_gaps_are_sorted_with_the_models_best_storm_first():
     scored = make_scored(
         [

@@ -390,6 +390,7 @@ Mean error on the validation split, on identical cases, with the winning setting
 - `bootstrap_skill(scored)` returns each model's skill against CLIPER with a 95% interval.
 - `skill_by_fold(scored)` returns skill block by block.
 - `win_rate(scored)` returns the percentage of cases where each model is closer than CLIPER.
+- `relative_error(summary, models)` ranks models by the rule used to rank settings.
 - `storm_gaps(scored, model)` returns each storm's mean error for a model minus CLIPER's, sorted.
 
 **Why it's built this way:**
