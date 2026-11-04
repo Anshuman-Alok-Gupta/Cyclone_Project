@@ -18,6 +18,12 @@ XGBoost adds one step, and is scored the same way:
 samples.make_init_times → features.build_features → xgb_model → scoring.score → scoring.summarize
 ```
 
+Model choice runs each model through cross-validation, and is scored the same way again:
+
+```
+folds → checks.check_folds → cv.model_rows → cv.out_of_fold → scoring.score → cv.bootstrap_skill
+```
+
 The project decisions behind these modules are in `CLAUDE.md`.
 
 ## config.py
@@ -335,6 +341,38 @@ Mean error on the validation split, on identical cases, with the winning setting
 - Distance to land itself adds nothing measurable on validation. It stays because it was asked for, and it may matter more for intensity than for track.
 
 **Reused by:** notebook 03. The LSTM has to beat these same numbers on the same cases, under the same rules for validation and test.
+
+## cv.py
+
+**What it does:** runs any model through cross-validation, and measures how far to trust the result.
+
+**Inputs and outputs:**
+- `model_rows(init_times, features, df)` returns one table with everything any model reads, for development storms only, with a `fold` column.
+- `out_of_fold(rows, truth, forecaster)` returns forecasts for every development start time, each from a model that never saw that storm, in the format `scoring.score` takes.
+- A forecaster is one function: `forecaster(learning, learning_truth, held_out)` returns forecasts for `held_out`.
+- `bootstrap_skill(scored)` returns each model's skill against CLIPER with a 95% interval.
+- `skill_by_fold(scored)` returns skill block by block.
+- `win_rate(scored)` returns the percentage of cases where each model is closer than CLIPER.
+- `storm_gaps(scored, model)` returns each storm's mean error for a model minus CLIPER's, sorted.
+
+**Why it's built this way:**
+- A single validation split rests on whichever storms fell into it. Here every development storm is forecast once, so a comparison rests on all of them.
+- `out_of_fold` removes the held-out block's storms from the truth table before the model gets it. So a model can't learn from a block's answers whatever its code does, because they aren't in what it's handed.
+- Test storms are kept out twice: `model_rows` doesn't include them, and `out_of_fold` ignores any row outside a block, so a caller passing the full table still can't reach them.
+- Every model comes as the same kind of function, so all of them take exactly the same route, and the LSTM can too.
+- `model_rows` refuses tables that don't hold the same storms and times in the same order, because each storm would silently get another storm's inputs.
+- The bootstrap redraws whole storms, not rows. Forecasts from one storm, six hours apart, are nearly the same forecast of nearly the same situation, so 20 forecasts from one storm are much closer to 1 piece of evidence than to 20. Redrawing rows would count them as 20 and give an interval that looks far more certain than it is.
+- Each lead time redraws from the storms with a case at that lead, and every model is scored on the same redraws. So the interval measures the gap between models, not how hard the storms were.
+- The interval covers only the luck of which storms occurred. It doesn't cover the choice of settings, or storms in one season being alike.
+- Skill per block and win rate each catch something an average hides: a model that wins on the strength of one block, or through a few large wins.
+
+**Tests:** `tests/test_cv.py`.
+- The leakage test moves every truth position in one block, reruns, and requires that block's forecasts to be identical, for each of the five blocks.
+- Its partner test requires the other four blocks to change, because a model that ignored truth altogether would pass the leakage test too.
+- It catches real leaks. Letting a model learn from all five blocks, handing it the full truth table, and removing the block filter each made the tests fail.
+- A storm-level test repeats each storm's errors at 20 start times and requires the interval to stay the same, which a bootstrap of rows would fail.
+
+**Reused by:** every model comparison from here on, including the LSTM.
 
 ## plotting.py
 
