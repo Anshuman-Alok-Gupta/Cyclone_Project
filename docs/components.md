@@ -6,6 +6,12 @@ What each module in `src/cyclone/` does and why. The pipeline runs in this order
 config → io.load_ibtracs → filters.clean_ni → splits.assign_split → checks.check_expected → io.save_parquet
 ```
 
+Forecasting then starts from the saved table:
+
+```
+samples.make_truth, samples.make_init_times → checks.check_samples
+```
+
 The project decisions behind these modules are in `CLAUDE.md`.
 
 ## config.py
@@ -77,17 +83,45 @@ The project decisions behind these modules are in `CLAUDE.md`.
 
 ## checks.py
 
-**What it does:** stops the run if the cleaned table isn't the expected dataset.
+**What it does:** stops the run if the cleaned table or the forecast samples aren't the expected ones.
 
-**Inputs and outputs:** `check_expected(df)` takes the table with its `split` column. It prints a confirmation if all counts match. Otherwise it raises an `AssertionError` listing each difference and the likely causes.
+**Inputs and outputs:**
+- `check_expected(df)` takes the table with its `split` column. It prints a confirmation if all counts match. Otherwise it raises an `AssertionError` listing each difference and the likely causes.
+- `check_samples(init_times, truth)` does the same for the start times and for the cases with truth at each lead time.
+- `count_cases(init_times, truth)` returns those case counts as `{split: {lead_h: count}}`.
 
 **Why it's built this way:**
 - Wrong data still trains and still scores, so nothing downstream would notice.
 - It checks rows and storms separately because they catch different problems: lost points inside a storm, or whole storms moving.
 - It uses `raise` rather than `assert`, because `python -O` removes `assert` lines.
 - It only checks counts. A table with the right counts but wrong values would pass, which is why the notebook also draws a map.
+- `check_samples` counts test cases but never scores them, so the test split stays locked.
 
-**Reused by:** every run of the notebook. If the data is re-downloaded on purpose, review the differences and then update the numbers here and in `CLAUDE.md`.
+| Split | Init times | Cases +24 h | Cases +48 h | Cases +72 h |
+|---|---:|---:|---:|---:|
+| train | 3,203 | 2,515 | 1,869 | 1,324 |
+| val | 542 | 438 | 340 | 256 |
+| test | 933 | 749 | 578 | 430 |
+
+**Reused by:** every run of the notebooks. If the data is re-downloaded on purpose, review the differences and then update the numbers here and in `CLAUDE.md`.
+
+## samples.py
+
+**What it does:** turns the cleaned table into the two tables forecasts work from: where storms really were, and what was known at each start time.
+
+**Inputs and outputs:**
+- `make_truth(df)` returns `SID`, `valid_time`, `lat`, `lon`, one row per fix.
+- `make_init_times(df)` returns every fix with JTWC fixes at exactly 6, 12, 18 and 24 h earlier: `SID`, `init_time`, `split`, `lat`, `lon`, `wind`, then `lat_m06` to `lon_m24`.
+- `with_truth_at(init_times, truth, lead_h)` returns the start times that have a true position `lead_h` hours later, with `truth_lat` and `truth_lon` added.
+
+**Why it's built this way:**
+- The two tables are separate so that future positions aren't in the table models read. A model can't look ahead by accident if the answer isn't there.
+- Past fixes are matched by timestamp, as `CLAUDE.md` requires. Shifting by 4 rows would accept 4,683 start times, and 5 of those have a 12 h gap in their history, so their "24 h ago" is really 30 h ago. Matching gives the correct 4,678.
+- Deleting every fix after a storm's midpoint and rebuilding left the history of all 1,910 remaining start times unchanged, which confirms nothing after t0 is used.
+- `with_truth_at` is the one place a start time meets a future position, so a future leak has only one place to come from.
+- `USA_WIND` at t0 is missing for 24 start times, all in 1980. They stay in, since the baselines don't use wind, and later models must handle them.
+
+**Reused by:** baselines, XGBoost and the LSTM. Using the same start times is what makes their scores comparable.
 
 ## plotting.py
 

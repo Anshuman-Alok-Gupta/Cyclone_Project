@@ -8,11 +8,19 @@ just wrong ones. So the expected counts are written down here and checked every 
 import pandas as pd
 
 from cyclone.filters import FIRST_SEASON, LAST_SEASON, SYNOPTIC_HOURS
+from cyclone.samples import LEAD_HOURS, with_truth_at
 
 # Verified against IBTrACS v04r01 on 2026-11-04.
 EXPECTED_ROWS = 5_694
 EXPECTED_STORMS = 258
 EXPECTED_STORMS_BY_SPLIT = {"train": 184, "val": 27, "test": 47}
+EXPECTED_INIT_TIMES_BY_SPLIT = {"train": 3_203, "val": 542, "test": 933}
+# Start times with a true position at each lead time: {split: {lead_h: count}}.
+EXPECTED_CASES_BY_SPLIT = {
+    "train": {24: 2_515, 48: 1_869, 72: 1_324},
+    "val": {24: 438, 48: 340, 72: 256},
+    "test": {24: 749, 48: 578, 72: 430},
+}
 
 
 def _find_likely_causes(df: pd.DataFrame) -> list[str]:
@@ -89,3 +97,53 @@ def check_expected(df: pd.DataFrame) -> None:
         f"{storms_by_split['train']}/{storms_by_split['val']}/{storms_by_split['test']} "
         "train/val/test."
     )
+
+
+def count_cases(init_times: pd.DataFrame, truth: pd.DataFrame) -> dict[str, dict[int, int]]:
+    """Count the start times with a true position, by split and lead time."""
+    counts: dict[str, dict[int, int]] = {split: {} for split in EXPECTED_CASES_BY_SPLIT}
+    for lead_h in LEAD_HOURS:
+        cases = with_truth_at(init_times, truth, lead_h)
+        for split in counts:
+            counts[split][lead_h] = int((cases["split"] == split).sum())
+    return counts
+
+
+def check_samples(init_times: pd.DataFrame, truth: pd.DataFrame) -> None:
+    """Raise an error explaining what differs if the sample counts aren't exact.
+
+    Each lead time has fewer cases than the one before, because storms end. A count
+    that drifts here usually means the timestamp matching changed, which would still
+    run and would quietly give every model a different set of cases.
+
+    This counts test cases but never scores them, so the test split stays locked.
+
+    Args:
+        init_times: the table from ``samples.make_init_times``.
+        truth: the table from ``samples.make_truth``.
+
+    Raises:
+        AssertionError: listing every count that differs.
+    """
+    init_counts = init_times["split"].value_counts().to_dict()
+    init_counts = {split: init_counts.get(split, 0) for split in EXPECTED_INIT_TIMES_BY_SPLIT}
+    case_counts = count_cases(init_times, truth)
+
+    mismatches = []
+    if init_counts != EXPECTED_INIT_TIMES_BY_SPLIT:
+        mismatches.append(
+            f"init times: expected {EXPECTED_INIT_TIMES_BY_SPLIT}, got {init_counts}"
+        )
+    for split, expected in EXPECTED_CASES_BY_SPLIT.items():
+        if case_counts[split] != expected:
+            mismatches.append(f"{split} cases: expected {expected}, got {case_counts[split]}")
+
+    if mismatches:
+        lines = ["Forecast samples do not match the verified counts. Stop and resolve this first."]
+        lines += ["Differences:"] + [f"  - {item}" for item in mismatches]
+        raise AssertionError("\n".join(lines))
+
+    print(f"Sample counts match: {len(init_times):,} init times.")
+    for split, counts in case_counts.items():
+        by_lead = ", ".join(f"+{lead_h} h {count:,}" for lead_h, count in counts.items())
+        print(f"  {split:<5} {init_counts[split]:>5,} init times; cases {by_lead}")
