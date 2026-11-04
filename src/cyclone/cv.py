@@ -198,24 +198,6 @@ def win_rate(scored: pd.DataFrame, reference: str = "cliper") -> pd.DataFrame:
     return 100 * wins.groupby(level="lead_h").mean()
 
 
-def relative_error(summary: pd.DataFrame, models: list[str]) -> pd.Series:
-    """Rank models by the rule used to rank settings, so that one rule decides both.
-
-    At each lead time, a model's mean error is divided by the best any of these models
-    reached at that lead. Those ratios are then averaged over the leads. So 1 means best
-    at every lead, and 5% worse at 24 h counts the same as 5% worse at 72 h.
-
-    Args:
-        summary: the table from ``scoring.summarize``.
-        models: the models to rank, as named in the model column.
-
-    Returns:
-        One value per model, best first.
-    """
-    mean_km = summary.pivot(index="lead_h", columns="model", values="mean_km")[models]
-    return mean_km.div(mean_km.min(axis=1), axis=0).mean().sort_values()
-
-
 def selection_scores(
     scored: pd.DataFrame,
     candidates: list[str],

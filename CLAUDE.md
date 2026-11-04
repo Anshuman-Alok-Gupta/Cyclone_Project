@@ -73,9 +73,12 @@ This is Project 1 of 3, leading to benchmarking AI weather models (GraphCast, Pa
       the best model at each lead, so a new entrant changes everyone's score and can swap two others.
   - Secondary results, reported alongside without changing the primary choice: persistence, CLIPER and every candidate,
     each with its own test interval.
-  - Final models are refitted on all of 1980–2017 with the settings chosen by cross-validation. Any XGBoost member is
-    the average of 5 seeds, because single-seed results varied (consensus +72 h ranged 2.1–2.4% across seeds).
-  - Current leader (2026-11-04): consensus of CLIPER and XGBoost.
+  - Any XGBoost member (plain, residual, or inside consensus) is the average of 5 seeds' forecasts (seeds 42–46), both
+    when measured under cross-validation and in the final model, because single-seed results varied (consensus +72 h
+    ranged 2.1–2.4% across seeds). The settings come from the search on seed 42, which isn't rerun.
+  - Final models are refitted on all of 1980–2017 with the settings chosen by cross-validation.
+  - Current leader (2026-11-04), 5-seed scores with 95% intervals: consensus of CLIPER and XGBoost 3.56% (2.48 to 4.62),
+    XGBoost 3.38% (0.96 to 5.62), `xgb_residual` 1.66% (0.06 to 3.09).
 - Scoring harness: great-circle error in km. It must be a standalone module that accepts any table of forecast positions, so it can score AI-model output in Project 3.
 
 ## Model input rules

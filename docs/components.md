@@ -21,7 +21,7 @@ samples.make_init_times → features.build_features → xgb_model → scoring.sc
 Model choice runs each model through cross-validation, and is scored the same way again:
 
 ```
-folds → checks.check_folds → cv.model_rows → cv.out_of_fold → scoring.score → cv.bootstrap_skill
+folds → checks.check_folds → cv.model_rows → cv.out_of_fold → scoring.score → cv.bootstrap_skill → cv.selection_scores
 ```
 
 The project decisions behind these modules are in `CLAUDE.md`.
@@ -314,6 +314,7 @@ Mean error on the validation split, on identical cases:
 - One count is used for all six models. Early stopping used to give each its own, and the longer leads stopped sooner, so this may suit some leads better than others.
 - `search_cv` judges each combination on the mean error over every out-of-fold case, so every case counts once and the score is the same one models are compared on later. The relative-error rule is unchanged.
 - `search_cv` takes about 5 minutes on this laptop's CPU, so with `checkpoint` set it writes its results after every combination. Resuming has to be asked for with `resume=True`. If it happened by itself, a rerun after a change to the data would quietly reuse old results.
+- Notebook 04 now sets `RESUME = True`, so it reads the 20 saved combinations back and doesn't search again. On a fresh machine nothing is saved, so the search runs in full. After a change to the data or inputs, set it to `False`.
 - A measured model is the average of 5 seeds' forecasts (42–46). Training has a random part, because `subsample` gives each tree a random share of the rows, so one seed's forecast is partly luck. Averaging cancels much of it, and leaves no room to pick a kind seed. CLIPER has no random part, so every seed in `xgb_residual` corrects the same CLIPER forecast.
 - The search stays on one seed, since it fits 20 combinations. So a setting chosen with seed 42 is measured with all five.
 - `fit_final` filters to the development seasons itself, so passing the full table can't reach test. It can't be scored on these storms, since it has seen them all, so the cross-validated score stands in for it until the test split.
@@ -345,7 +346,7 @@ Mean error on the validation split, on identical cases, with the winning setting
 
 - The last two rows pool four random halvings, each used both ways round. Early stopping also used only the picking half.
 - The gap between them is the optimism from choosing on validation, and it's not small. The fresh row leans a little low, because only half the storms guided the choice.
-- So XGBoost's lead at +24 h looks real, while at +48 and +72 h it may be small or nothing. Notebook 04 tested that on all the storms: 6.0%, 3.3% and 0.7%.
+- So XGBoost's lead at +24 h looks real, while at +48 and +72 h it may be small or nothing. Notebook 04 tested that on all the storms: 6.1%, 3.3% and 0.7%.
 - Shuffling the train targets sent validation error to 384, 628 and 883 km, so the skill comes from real signal and not from a bug.
 
 **Other one-off tests:**
@@ -397,7 +398,7 @@ The search winners were `max_depth` 3, `learning_rate` 0.02, `subsample` 0.6 for
 - It has its own file because `consensus.py` reads only the scoring format and knows nothing about any model, and `xgb_model.py` knows nothing about CLIPER's fit.
 - Cross-validation's models each saw four blocks, and their job was to measure a model. Using all five blocks gives the final one more storms to learn from.
 - It can't be scored on 1980–2017, since it has seen those storms, so the cross-validated score stands in for it until the test split.
-- Both members filter to the development seasons themselves, so passing the full table can't reach test. Corrupting every later storm left the forecasts identical.
+- Both members filter to the development seasons themselves, so passing the full table can't reach test. In the tests, corrupting every made-up storm after 2017 left the forecasts identical.
 - CLIPER is saved as well as XGBoost, although it refits in moments, so test day uses exactly the models fitted here.
 - CLIPER is pickled, which is the simple way to keep a scikit-learn model. Pickle runs code as it loads, so only read a file you wrote.
 
@@ -416,7 +417,6 @@ The search winners were `max_depth` 3, `learning_rate` 0.02, `subsample` 0.6 for
 - `bootstrap_skill(scored)` returns each model's skill against CLIPER with a 95% interval.
 - `skill_by_fold(scored)` returns skill block by block.
 - `win_rate(scored)` returns the percentage of cases where each model is closer than CLIPER.
-- `relative_error(summary, models)` ranks models by the rule used to rank settings.
 - `selection_scores(scored, candidates)` returns the score that picks the primary model, with a 95% interval, best first.
 - `storm_gaps(scored, model)` returns each storm's mean error for a model minus CLIPER's, sorted.
 
@@ -439,68 +439,81 @@ The search winners were `max_depth` 3, `learning_rate` 0.02, `subsample` 0.6 for
 - It catches real leaks. Letting a model learn from all five blocks, handing it the full truth table, and removing the block filter each made the tests fail.
 - A storm-level test repeats each storm's errors at 20 start times and requires the interval to stay the same, which a bootstrap of rows would fail.
 
-**Results.** Out-of-fold scores from notebook 04, on identical cases: 2,953, 2,209 and 1,580 cases at +24, +48 and +72 h, from 194, 171 and 140 storms. All models were scored on 1980–2017, for JTWC-warned systems in the North Indian Ocean.
+**Results.** Out-of-fold scores from notebook 04, on identical cases: 2,953, 2,209 and 1,580 cases at +24, +48 and +72 h, from 194, 171 and 140 storms. All models were scored on 1980–2017, for JTWC-warned systems in the North Indian Ocean. XGBoost, `xgb_residual` and consensus's XGBoost member are each the average of 5 seeds.
 
 | Model | Mean km +24 h | +48 h | +72 h | Median km +24 h | +48 h | +72 h |
 |---|---:|---:|---:|---:|---:|---:|
 | Persistence | 155.6 | 367.7 | 601.7 | 135.0 | 329.1 | 544.9 |
 | CLIPER | 145.3 | 327.3 | 497.9 | 127.6 | 298.6 | 445.4 |
-| XGBoost | 136.7 | 316.6 | 494.4 | 120.5 | 283.4 | 450.0 |
-| `xgb_residual` | 142.6 | 323.1 | 489.2 | 125.7 | 291.7 | 440.6 |
-| Consensus | 138.2 | 316.3 | 486.0 | 121.9 | 284.3 | 433.4 |
+| XGBoost | 136.5 | 316.5 | 494.2 | 120.1 | 284.2 | 447.5 |
+| `xgb_residual` | 142.6 | 322.6 | 489.6 | 125.5 | 289.8 | 440.3 |
+| Consensus | 138.2 | 316.3 | 486.0 | 121.6 | 283.5 | 435.2 |
 
 | Skill vs CLIPER (95% interval) | +24 h | +48 h | +72 h |
 |---|---:|---:|---:|
-| XGBoost | 6.0% (4.4 to 7.5) | 3.3% (0.7 to 5.7) | 0.7% (−3.5 to 4.5) |
-| `xgb_residual` | 1.9% (0.9 to 2.8) | 1.3% (−0.6 to 3.0) | 1.7% (−0.8 to 4.0) |
-| Consensus | 4.9% (4.1 to 5.7) | 3.4% (2.2 to 4.5) | 2.4% (0.4 to 4.3) |
+| XGBoost | 6.1% (4.6 to 7.6) | 3.3% (0.7 to 5.7) | 0.7% (−3.4 to 4.5) |
+| `xgb_residual` | 1.9% (1.0 to 2.8) | 1.4% (−0.4 to 3.1) | 1.6% (−0.9 to 3.9) |
+| Consensus | 4.9% (4.2 to 5.7) | 3.4% (2.2 to 4.5) | 2.4% (0.5 to 4.2) |
 
 | Win rate vs CLIPER, by case | +24 h | +48 h | +72 h |
 |---|---:|---:|---:|
-| XGBoost | 58.9% | 53.4% | 48.4% |
-| `xgb_residual` | 56.7% | 52.7% | 52.6% |
-| Consensus | 63.0% | 57.8% | 53.0% |
+| XGBoost | 59.0% | 54.1% | 48.4% |
+| `xgb_residual` | 56.6% | 53.0% | 52.0% |
+| Consensus | 63.3% | 58.0% | 53.2% |
 
-- Consensus is the best model overall. XGBoost is slightly better at +24 h (1.1%, interval 0.2 to 2.1), they're level at +48 h, and consensus leads at +72 h with an interval that crosses zero (1.7%, −0.4 to 4.0).
-- **No model clearly beats CLIPER at +72 h.** Consensus is 12 km ahead, but its interval only just clears zero, and storm by storm it's 73 to 67. Its average win is 56 km against an average loss of 37 km.
+**The score that picks the primary model** is the mean skill vs CLIPER across the three leads, as `CLAUDE.md` sets out. The interval is for information only.
+
+| Candidate | 5 seeds (95% interval) | 1 seed (95% interval) |
+|---|---:|---:|
+| Consensus | 3.56 (2.48 to 4.62) | 3.55 (2.48 to 4.59) |
+| XGBoost | 3.38 (0.96 to 5.62) | 3.31 (0.92 to 5.54) |
+| `xgb_residual` | 1.66 (0.06 to 3.09) | 1.63 (0.02 to 3.08) |
+
+- **Consensus is the primary model today.** The gap of 0.18 is much smaller than either interval, and the rule picks the higher score anyway. XGBoost is slightly better at +24 h (1.2%, interval 0.3 to 2.2), they're level at +48 h, and consensus leads at +72 h with an interval that crosses zero (1.6%, −0.5 to 3.9).
+- **No model clearly beats CLIPER at +72 h.** Consensus is 12 km ahead, but its interval only just clears zero, and storm by storm it's 71 to 69. Its average win is 57 km against an average loss of 35 km.
 - At +24 h, XGBoost and consensus clearly beat CLIPER, in all five blocks. At +48 h, consensus does.
 - CLIPER's error here is 145, 327 and 498 km, against 129, 289 and 459 km on the 2013–17 storms in notebook 03. Those validation storms were easy, and XGBoost's 8.0% at +72 h there has fallen to 0.7%.
 
-**How far to trust that.** These are one-off tests, on the development seasons only:
+**What averaging 5 seeds changed.** Very little. Single-seed skill was 6.0, 3.3 and 0.7% for XGBoost, 1.9, 1.3 and 1.7% for `xgb_residual`, and 4.9, 3.4 and 2.4% for consensus, and no skill moved by more than 0.15 of a point.
 
-| Skill vs CLIPER | +24 h | +48 h | +72 h |
-|---|---:|---:|---:|
-| XGBoost, as reported | 6.0% | 3.3% | 0.7% |
-| XGBoost, nested | 6.0% | 3.1% | 0.4% |
-| XGBoost, if the held-out block chose its own early stop | 6.6% | 4.1% | 1.5% |
-| Consensus, as reported | 4.9% | 3.4% | 2.4% |
-| Consensus, nested | 5.0% | 3.3% | 2.3% |
-| `xgb_residual`, as reported | 1.9% | 1.3% | 1.7% |
-| `xgb_residual`, nested | 1.7% | 1.2% | 1.0% |
+- The intervals are about as wide as before. They measure the luck of which storms occurred, and averaging seeds does nothing about that.
+- Each of seeds 42 to 46 alone gave consensus 2.2 to 2.4% at +72 h and a score of 3.50 to 3.55. A second set of five, seeds 47 to 51, gave 2.3% and 3.52, against 2.4% and 3.56 for seeds 42 to 46.
+- XGBoost alone scored 3.17 to 3.31 on single seeds, and 3.38 and 3.33 as the two 5-seed averages. Consensus came first in every one of these runs.
+- The settings were searched on seed 42 only, then measured with five.
 
-- Nested cross-validation picks each block's settings using only the other four blocks, so the block plays no part in the choice. The cost is 0.3 at most for XGBoost and consensus, and 0.7 for `xgb_residual`. The same kind of test took XGBoost's +48 h skill from 4.7% to 0.0% in notebook 03, so cross-validation has largely removed the problem.
+**How far to trust that.** These are one-off tests, on the development seasons only, for the 5-seed models unless they say otherwise:
+
+| Skill vs CLIPER | +24 h | +48 h | +72 h | Score |
+|---|---:|---:|---:|---:|
+| XGBoost, as reported | 6.1% | 3.3% | 0.7% | 3.38 |
+| XGBoost, nested | 6.1% | 3.2% | 0.3% | 3.18 |
+| Consensus, as reported | 4.9% | 3.4% | 2.4% | 3.56 |
+| Consensus, nested | 5.0% | 3.3% | 2.2% | 3.50 |
+| `xgb_residual`, as reported | 1.9% | 1.4% | 1.6% | 1.66 |
+| `xgb_residual`, nested | 1.6% | 1.2% | 0.9% | 1.23 |
+
+- Nested cross-validation picks each block's settings using only the other four blocks, so the block plays no part in the choice. The picks come from a one-seed run, and were reused rather than searched again. The cost is 0.5 at most for XGBoost, 0.2 for consensus and 0.8 for `xgb_residual`, and the order of the three scores doesn't change. The same kind of test took XGBoost's +48 h skill from 4.7% to 0.0% in notebook 03, so cross-validation has largely removed the problem.
 - The nested settings were steady. XGBoost chose depth 3 in every block, and only two combinations ever won.
-- Letting the held-out block choose its own early stop adds 0.6 to 0.9 points. That's the leak the searched tree count avoids.
+- With one seed, letting the held-out block choose its own early stop took XGBoost from 6.0, 3.3 and 0.7% to 6.6, 4.1 and 1.5%. That's the leak the searched tree count avoids.
 
 | 95% interval for consensus | +24 h | +48 h | +72 h |
 |---|---:|---:|---:|
-| Redrawing storms (as reported) | 4.1 to 5.7 | 2.2 to 4.5 | 0.4 to 4.3 |
-| Redrawing rows (wrong) | 4.4 to 5.4 | 2.7 to 4.0 | 1.6 to 3.2 |
-| Redrawing whole seasons | 4.2 to 5.6 | 2.4 to 4.2 | 0.9 to 3.8 |
+| Redrawing storms (as reported) | 4.2 to 5.7 | 2.2 to 4.5 | 0.5 to 4.2 |
+| Redrawing rows (wrong) | 4.4 to 5.5 | 2.7 to 4.0 | 1.6 to 3.2 |
+| Redrawing whole seasons | 4.2 to 5.6 | 2.3 to 4.2 | 0.9 to 3.8 |
 
 - Redrawing rows gives an interval about half as wide at +72 h, which is the false certainty the storm bootstrap avoids.
 - Redrawing seasons gives intervals no wider, so storms in one season being alike isn't making the reported intervals too narrow.
-- Three other bootstrap seeds moved the limits by less than 0.1.
-- Five other XGBoost seeds moved consensus at +72 h between 2.1 and 2.4%, and XGBoost at +72 h between 0.2 and 0.7%, so the seed used is at the favourable end.
+- Three other bootstrap seeds moved the limits of the scores by less than 0.1.
 
 | Skill vs CLIPER, allowing for nine looks (99.4%) | +24 h | +48 h | +72 h |
 |---|---:|---:|---:|
-| XGBoost | 3.7 to 8.2% | −0.5 to 6.6% | −5.6 to 6.0% |
-| `xgb_residual` | 0.5 to 3.2% | −1.4 to 3.7% | −2.0 to 4.9% |
-| Consensus | 3.8 to 6.0% | 1.7 to 4.9% | −0.5 to 5.0% |
+| XGBoost | 3.9 to 8.3% | −0.4 to 6.7% | −5.3 to 5.9% |
+| `xgb_residual` | 0.6 to 3.2% | −1.3 to 3.8% | −2.1 to 4.7% |
+| Consensus | 3.8 to 6.0% | 1.7 to 4.9% | −0.4 to 5.0% |
 
 - A 95% interval is fair for one number chosen in advance. Reading the best of three models at three leads is nine looks, and this table allows for that (a Bonferroni correction).
-- On the real data, moving every truth position in one block left that block's forecasts identical for CLIPER, XGBoost and `xgb_residual`, while every forecast in the other blocks moved. Corrupting every test row and rebuilding left all forecasts identical.
+- On the real data with one seed, moving every truth position in one block left that block's forecasts identical for CLIPER, XGBoost and `xgb_residual`, while every forecast in the other blocks moved. Corrupting every test row and rebuilding left all forecasts identical.
 
 **Reused by:** every model comparison from here on, including the LSTM. These are the numbers it has to beat, on the same cases.
 
