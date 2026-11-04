@@ -31,16 +31,34 @@ INTERVAL_PERCENTILES = (2.5, 97.5)
 Forecaster = Callable[[pd.DataFrame, pd.DataFrame, pd.DataFrame], pd.DataFrame]
 
 
+def join_inputs(init_times: pd.DataFrame, features: pd.DataFrame) -> pd.DataFrame:
+    """Return one table with everything any model reads, one row per start time.
+
+    CLIPER and persistence read the past positions in init_times, and XGBoost reads the
+    columns in features. Holding both in one table lets the same rows go to every model,
+    which is what makes their scores comparable.
+
+    Args:
+        init_times: the table from ``samples.make_init_times``.
+        features: the table from ``features.build_features``.
+
+    Returns:
+        Both tables side by side.
+    """
+    keys = ["SID", "init_time"]
+    if not features[keys].reset_index(drop=True).equals(init_times[keys].reset_index(drop=True)):
+        raise ValueError("init_times and features must hold the same rows in the same order.")
+
+    extra = features.drop(columns=[column for column in init_times if column in features.columns])
+    return pd.concat([init_times.reset_index(drop=True), extra.reset_index(drop=True)], axis=1)
+
+
 def model_rows(
     init_times: pd.DataFrame,
     features: pd.DataFrame,
     df: pd.DataFrame,
 ) -> pd.DataFrame:
     """Return one table with everything any model reads, for development storms only.
-
-    CLIPER and persistence read the past positions in init_times, and XGBoost reads the
-    columns in features. Holding both in one table lets the same rows go to every model,
-    which is what makes their scores comparable.
 
     Test storms are dropped here, so they never enter the cross-validation at all.
 
@@ -52,14 +70,7 @@ def model_rows(
     Returns:
         One row per development start time, with a "fold" column.
     """
-    keys = ["SID", "init_time"]
-    if not features[keys].reset_index(drop=True).equals(init_times[keys].reset_index(drop=True)):
-        raise ValueError("init_times and features must hold the same rows in the same order.")
-
-    extra = features.drop(columns=[column for column in init_times if column in features.columns])
-    table = pd.concat(
-        [init_times.reset_index(drop=True), extra.reset_index(drop=True)], axis=1
-    )
+    table = join_inputs(init_times, features)
     return development(add_fold(table, df)).reset_index(drop=True)
 
 

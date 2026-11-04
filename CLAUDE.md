@@ -77,6 +77,10 @@ This is Project 1 of 3, leading to benchmarking AI weather models (GraphCast, Pa
     when measured under cross-validation and in the final model, because single-seed results varied (consensus +72 h
     ranged 2.1–2.4% across seeds). The settings come from the search on seed 42, which isn't rerun.
   - Final models are refitted on all of 1980–2017 with the settings chosen by cross-validation.
+  - Test day only runs code that was tested beforehand: `final_scoring.score_final_models`, rehearsed on the development
+    seasons in notebook 04. A bug that first shows up on test can't be fixed without a second look, and a bad result
+    gets checked for bugs while a good one doesn't. It refuses 2018–2024 unless called with `confirm_test=True`, which
+    is passed only for that one run.
   - Current leader (2026-11-04), 5-seed scores with 95% intervals: consensus of CLIPER and XGBoost 3.56% (2.48 to 4.62),
     XGBoost 3.38% (0.96 to 5.62), `xgb_residual` 1.66% (0.06 to 3.09).
 - Scoring harness: great-circle error in km. It must be a standalone module that accepts any table of forecast positions, so it can score AI-model output in Project 3.

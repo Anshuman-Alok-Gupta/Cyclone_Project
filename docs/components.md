@@ -24,6 +24,12 @@ Model choice runs each model through cross-validation, and is scored the same wa
 folds → checks.check_folds → cv.model_rows → cv.out_of_fold → scoring.score → cv.bootstrap_skill → cv.selection_scores
 ```
 
+The final models are then refitted and saved, and scored once at the end of Project 1:
+
+```
+final_model.fit_final_models → final_model.save_final_models → final_scoring.score_final_models
+```
+
 The project decisions behind these modules are in `CLAUDE.md`.
 
 ## config.py
@@ -407,12 +413,37 @@ The search winners were `max_depth` 3, `learning_rate` 0.02, `subsample` 0.6 for
 
 **Reused by:** the test split, at the end of Project 1.
 
+## final_scoring.py
+
+**What it does:** holds the code that scores the final models on the test split, written and rehearsed before it's needed.
+
+**Inputs and outputs:**
+- `rows_for_seasons(df, seasons)` returns one table with everything any model reads, for any seasons, with a `fold` column. Seasons outside the blocks are labelled `none`.
+- `score_final_models(df, seasons, directory, confirm_test=False)` loads the saved final models, forecasts those seasons and returns the table from `scoring.score`, ready for `scoring.summarize` and `cv.bootstrap_skill`.
+- `check_seasons(seasons, confirm_test)` is the guard, and `TEST_SEASONS` holds 2018–2024.
+
+**Why it's built this way:**
+- **Test day should only run code that was tested beforehand.** Test is scored once. A bug that first shows up on test has no good way out: once results have been seen, fixing the code and scoring again is a second look at the exam, and leaving the bug in means reporting a wrong number. Worse, the wish to go looking for a bug depends on whether the number was welcome, so a disappointing result gets checked and a pleasing one doesn't. Rehearsing on the development seasons finds those bugs while finding them costs nothing.
+- The rehearsal's scores mean nothing, because the final models have seen those storms. So notebook 04 prints counts rather than errors, and checks that the rows and cases match cross-validation's.
+- `rows_for_seasons` uses `make_init_times`, `build_features` and the same join as `cv.model_rows`, so a model reads test rows built exactly as its measured rows were. On the real development seasons, the two tables are identical.
+- `TEST_SEASONS` comes from the boundaries in `splits.py`, so the guard can't drift from them.
+- The guard runs before anything is read, so a refusal can't depend on looking at the data. A test passes no table at all to prove it.
+- One test season among others is refused, since that would still be a look at it.
+- Only `True` itself confirms, and `confirm_test` has to be named in the call. So a stray `1`, `"yes"` or extra positional value can't use up the one look.
+- The saved models are loaded, not fitted, so nothing about the seasons being scored can reach them. A test stops the run if anything tries to fit.
+- Seasons that aren't in the cleaned table are refused. That includes 2025 onward, which cleaning removes as provisional.
+- The scoring function is never called on a test season, even a made-up one. The guard is tested alone, so its "yes" path is proved without scoring. The rows function does run on the made-up storms after 2017, so a real test season isn't the first to reach the `none` label.
+
+**Tests:** `tests/test_final_scoring.py`.
+
+**Reused by:** the test split, at the end of Project 1, with `confirm_test=True`.
+
 ## cv.py
 
 **What it does:** runs any model through cross-validation, and measures how far to trust the result.
 
 **Inputs and outputs:**
-- `model_rows(init_times, features, df)` returns one table with everything any model reads, for development storms only, with a `fold` column.
+- `model_rows(init_times, features, df)` returns one table with everything any model reads, for development storms only, with a `fold` column. `join_inputs(init_times, features)` is the join inside it, shared with `final_scoring.rows_for_seasons`.
 - `out_of_fold(rows, truth, forecaster)` returns forecasts for every development start time, each from a model that never saw that storm, in the format `scoring.score` takes.
 - A forecaster is one function: `forecaster(learning, learning_truth, held_out)` returns forecasts for `held_out`.
 - `bootstrap_skill(scored)` returns each model's skill against CLIPER with a 95% interval.
