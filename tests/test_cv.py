@@ -299,6 +299,96 @@ def test_relative_error_ignores_models_not_asked_about():
     assert cv.relative_error(summary, ["a", "b"]).to_dict() == pytest.approx({"a": 1.0, "b": 1.1})
 
 
+def test_selection_score_is_the_mean_of_each_leads_skill(rows, truth):
+    forecasts = pd.concat(
+        [
+            cv.out_of_fold(rows, truth, persistence_forecast),
+            cv.out_of_fold(rows, truth, cliper_forecast),
+        ],
+        ignore_index=True,
+    )
+    scored = score(forecasts, truth, report=False)
+    table = cv.selection_scores(scored, ["persistence"], n_resamples=50)
+    by_lead = cv.bootstrap_skill(scored, n_resamples=50)
+    assert table["score"].item() == pytest.approx(by_lead["skill"].mean())
+    assert table["low"].item() <= table["score"].item() <= table["high"].item()
+
+
+def scores_table(errors: dict[str, dict[int, float]], storms: int = 4) -> pd.DataFrame:
+    """Build a scored table in which every storm has the same errors."""
+    return make_scored(
+        [
+            (model, f"S{storm}", 0, lead_h, km, "a")
+            for model, by_lead in errors.items()
+            for lead_h, km in by_lead.items()
+            for storm in range(storms)
+        ]
+    )
+
+
+def test_selection_ranks_by_score_and_ignores_the_interval():
+    scored = scores_table(
+        {
+            "cliper": {24: 100.0, 72: 100.0},
+            "strong_at_one_lead": {24: 70.0, 72: 100.0},
+            "steady": {24: 90.0, 72: 95.0},
+        }
+    )
+    table = cv.selection_scores(scored, ["steady", "strong_at_one_lead"], n_resamples=50)
+    assert table["model"].tolist() == ["strong_at_one_lead", "steady"]
+    assert table["score"].tolist() == pytest.approx([15.0, 7.5])
+
+
+def test_every_lead_counts_equally_however_large_its_errors():
+    # 10% better at +72 h counts the same as 10% better at +24 h, though it saves ten
+    # times as many km, so these two tie. Ranking on km would pick the second.
+    scored = scores_table(
+        {
+            "cliper": {24: 100.0, 72: 1000.0},
+            "better_at_24": {24: 90.0, 72: 1000.0},
+            "better_at_72": {24: 100.0, 72: 900.0},
+        }
+    )
+    table = cv.selection_scores(scored, ["better_at_24", "better_at_72"], n_resamples=50)
+    assert table["score"].tolist() == pytest.approx([5.0, 5.0])
+
+
+def test_an_exact_tie_goes_to_the_simpler_model():
+    errors = {"cliper": {24: 100.0}, "simple": {24: 90.0}, "complex": {24: 90.0}}
+    table = cv.selection_scores(scores_table(errors), ["simple", "complex"], n_resamples=50)
+    assert table["model"].tolist() == ["simple", "complex"]
+
+    table = cv.selection_scores(scores_table(errors), ["complex", "simple"], n_resamples=50)
+    assert table["model"].tolist() == ["complex", "simple"]
+
+
+def test_selection_interval_redraws_a_storm_at_all_its_leads_together():
+    # On each storm, the win at one lead exactly cancels the loss at the other, so every
+    # redraw scores 0 when a storm moves as a whole. Redrawing each lead separately would
+    # break the pairing and give an interval around 0 instead.
+    scored = make_scored(
+        [
+            ("cliper", "A", 0, 24, 100.0, "a"),
+            ("cliper", "A", 0, 48, 100.0, "a"),
+            ("cliper", "B", 0, 24, 100.0, "a"),
+            ("cliper", "B", 0, 48, 100.0, "a"),
+            ("model", "A", 0, 24, 80.0, "a"),
+            ("model", "A", 0, 48, 120.0, "a"),
+            ("model", "B", 0, 24, 120.0, "a"),
+            ("model", "B", 0, 48, 80.0, "a"),
+        ]
+    )
+    table = cv.selection_scores(scored, ["model"], n_resamples=500)
+    assert table["low"].item() == pytest.approx(0.0, abs=1e-9)
+    assert table["high"].item() == pytest.approx(0.0, abs=1e-9)
+
+
+def test_selection_interval_repeats_exactly_with_the_same_seed():
+    scored = scores_table({"cliper": {24: 100.0}, "model": {24: 90.0}})
+    first = cv.selection_scores(scored, ["model"], n_resamples=100)
+    tm.assert_frame_equal(first, cv.selection_scores(scored, ["model"], n_resamples=100))
+
+
 def test_storm_gaps_are_sorted_with_the_models_best_storm_first():
     scored = make_scored(
         [

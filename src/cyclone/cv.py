@@ -216,6 +216,68 @@ def relative_error(summary: pd.DataFrame, models: list[str]) -> pd.Series:
     return mean_km.div(mean_km.min(axis=1), axis=0).mean().sort_values()
 
 
+def selection_scores(
+    scored: pd.DataFrame,
+    candidates: list[str],
+    reference: str = "cliper",
+    n_resamples: int = BOOTSTRAP_RESAMPLES,
+    seed: int = BOOTSTRAP_SEED,
+) -> pd.DataFrame:
+    """Return the score that picks the primary model, with a 95% interval, best first.
+
+    A candidate's score is its mean skill against a reference model across the lead
+    times, each lead counting equally. The rule itself, and why, is in CLAUDE.md. The
+    interval is for information only: the highest score wins, whatever the intervals say.
+
+    The interval can't be worked out from ``bootstrap_skill``, which redraws each lead
+    separately. Here one redraw of the storms applies to all the leads at once, because
+    a storm that's kind to a model at +24 h is the same storm at +72 h. Redrawing them
+    separately would break that link. A storm with no case at a lead adds nothing there.
+
+    Args:
+        scored: the table from ``scoring.score``, holding the reference and candidates.
+        candidates: the models to rank, simplest first. An exact tie keeps this order,
+            so the simpler model wins it.
+        reference: the model to compare against, as named in the model column.
+        n_resamples: how many times to redraw the storms.
+        seed: fixes the redraws, so a run can be repeated.
+
+    Returns:
+        One row per candidate, best first, with columns model, score, low and high, as
+        percentages. Positive is better.
+    """
+    cases = homogeneous_cases(scored)
+    # Each storm's total error, as in bootstrap_skill. Skill can be worked out from these
+    # because every model has the same cases.
+    totals = cases.pivot_table(
+        index="SID", columns=["lead_h", "model"], values="error_km", aggfunc="sum", fill_value=0.0
+    )
+    leads = totals.columns.get_level_values("lead_h").unique()
+
+    n_storms = len(totals)
+    rng = np.random.default_rng(seed)
+    draws = rng.multinomial(n_storms, np.full(n_storms, 1 / n_storms), size=n_resamples)
+
+    def mean_skill(weights: np.ndarray, model: str) -> np.ndarray:
+        """Return the score under one set of storm weights, or one per row of weights."""
+        ratios = [
+            (weights @ totals[lead, model].to_numpy()) / (weights @ totals[lead, reference].to_numpy())
+            for lead in leads
+        ]
+        return 100 * (1 - np.mean(ratios, axis=0))
+
+    rows = []
+    for model in candidates:
+        low, high = np.percentile(mean_skill(draws, model), INTERVAL_PERCENTILES)
+        rows.append(
+            {"model": model, "score": mean_skill(np.ones(n_storms), model), "low": low, "high": high}
+        )
+
+    # A stable sort, so that an exact tie stays in the order given.
+    table = pd.DataFrame(rows).sort_values("score", ascending=False, kind="stable")
+    return table.reset_index(drop=True)
+
+
 def storm_gaps(
     scored: pd.DataFrame,
     model: str,

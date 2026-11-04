@@ -393,6 +393,7 @@ The search winners were `max_depth` 3, `learning_rate` 0.02, `subsample` 0.6 for
 - `skill_by_fold(scored)` returns skill block by block.
 - `win_rate(scored)` returns the percentage of cases where each model is closer than CLIPER.
 - `relative_error(summary, models)` ranks models by the rule used to rank settings.
+- `selection_scores(scored, candidates)` returns the score that picks the primary model, with a 95% interval, best first.
 - `storm_gaps(scored, model)` returns each storm's mean error for a model minus CLIPER's, sorted.
 
 **Why it's built this way:**
@@ -400,6 +401,8 @@ The search winners were `max_depth` 3, `learning_rate` 0.02, `subsample` 0.6 for
 - `out_of_fold` removes the held-out block's storms from the truth table before the model gets it. So a model can't learn from a block's answers whatever its code does, because they aren't in what it's handed.
 - Test storms are kept out twice: `model_rows` doesn't include them, and `out_of_fold` ignores any row outside a block, so a caller passing the full table still can't reach them.
 - Every model comes as the same kind of function, so all of them take exactly the same route, and the LSTM can too.
+- `selection_scores` applies the rule in `CLAUDE.md`: mean skill against CLIPER across the leads, highest wins. One redraw of the storms covers all the leads at once, because a storm that's kind to a model at +24 h is the same storm at +72 h. `bootstrap_skill` redraws each lead separately, so its intervals can't simply be averaged into this one.
+- `candidates` goes in simplest first, and the sort is stable, so an exact tie goes to the simpler model. The interval is for information only.
 - `model_rows` refuses tables that don't hold the same storms and times in the same order, because each storm would silently get another storm's inputs.
 - The bootstrap redraws whole storms, not rows. Forecasts from one storm, six hours apart, are nearly the same forecast of nearly the same situation, so 20 forecasts from one storm are much closer to 1 piece of evidence than to 20. Redrawing rows would count them as 20 and give an interval that looks far more certain than it is.
 - Each lead time redraws from the storms with a case at that lead, and every model is scored on the same redraws. So the interval measures the gap between models, not how hard the storms were.

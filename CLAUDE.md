@@ -56,9 +56,23 @@ This is Project 1 of 3, leading to benchmarking AI weather models (GraphCast, Pa
 - **Test plan, decided on 2026-11-04 before anyone has seen test results.** Test (2018–2024) is in no block, and
   scoring it earlier or going back to change something after seeing it would turn it into a second validation set.
   - The test split is scored exactly once, at the end of Project 1, after the LSTM and West Pacific pretraining steps.
-  - Primary result: the model with the best cross-validated relative error over 1980–2017 at that point, compared
-    with CLIPER. If two are within their cross-validation uncertainty, prefer the simpler one.
-  - Secondary results, reported alongside without changing the primary choice: persistence, CLIPER, XGBoost and consensus.
+  - **Primary result: the primary model compared with CLIPER.** The rule below picks that model at the point test is
+    scored, with no judgement call left to make, so that nothing about the choice can bend towards a result.
+    - Candidates: every model except persistence and CLIPER, which are references, not candidates. They're what a
+      candidate has to beat, so they can't also be in the race.
+    - Score: mean skill vs CLIPER across +24, +48 and +72 h (equal weight), from the 5-fold blocked cross-validation
+      out-of-fold forecasts. One number leaves no room to pick a flattering lead afterwards, equal weight stops 72 h's
+      larger errors from deciding everything, and out-of-fold forecasts come from models that never saw those storms.
+    - Primary model: the highest score. If two scores are exactly equal, the simpler wins (XGBoost, then consensus, then
+      LSTM, then pretrained models). There's no uncertainty-based tie-break: "close enough" is a judgement that could be
+      argued either way, and every candidate is reported as a secondary result with its own test interval anyway.
+    - Report each candidate's score with a storm-bootstrap 95% interval, for information only; it doesn't affect the
+      choice. It shows how close the race was without reopening it.
+    - Settings within one model are still chosen by the existing relative-error search. Only the choice between models
+      uses skill vs CLIPER, because a fixed reference can't be reshuffled by adding new models. Relative error divides by
+      the best model at each lead, so a new entrant changes everyone's score and can swap two others.
+  - Secondary results, reported alongside without changing the primary choice: persistence, CLIPER and every candidate,
+    each with its own test interval.
   - Final models are refitted on all of 1980–2017 with the settings chosen by cross-validation. Any XGBoost member is
     the average of 5 seeds, because single-seed results varied (consensus +72 h ranged 2.1–2.4% across seeds).
   - Current leader (2026-11-04): consensus of CLIPER and XGBoost.
