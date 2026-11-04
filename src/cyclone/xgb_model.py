@@ -523,6 +523,7 @@ def fit_final(
     truth: pd.DataFrame,
     settings: dict,
     device: str,
+    base: pd.DataFrame | None = None,
 ) -> dict[int, dict[tuple[int, str], xgb.XGBRegressor]]:
     """Refit chosen settings with every seed, on every development season.
 
@@ -540,11 +541,12 @@ def fit_final(
         truth: the table from ``samples.make_truth``.
         settings: the chosen settings, from ``best_settings``.
         device: "cpu" or "cuda", from ``pick_device``.
+        base: as in ``fit_fixed``, for xgb_residual.
 
     Returns:
         {seed: models}, to pass to ``predict_seeds``.
     """
-    return fit_seeds(development(rows), truth, settings, device)
+    return fit_seeds(development(rows), truth, settings, device, base)
 
 
 def best_settings(search_table: pd.DataFrame) -> dict:

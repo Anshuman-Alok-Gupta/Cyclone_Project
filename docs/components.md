@@ -288,7 +288,7 @@ Mean error on the validation split, on identical cases:
 - `fit_fixed(rows, truth, settings, device, base=None)` fits the six models on exactly the rows given, keeping every tree. With `base`, the target is the truth minus that forecast.
 - `fit_seeds(rows, truth, settings, device, base=None, seeds=SEEDS)` fits one set of six models per seed, and `predict_seeds(fitted, features, name, base=None)` returns the average of their forecasts.
 - `xgboost_forecaster(settings, device, seeds)` and `residual_forecaster(settings, device, seeds)` return the two models in the form `cv.out_of_fold` takes. One seed is the default, for the search. Pass `SEEDS` to measure a model.
-- `fit_final(rows, truth, settings, device)` refits chosen settings on all of 1980–2017, once per seed. `save_final` and `load_final` write and read one folder per seed, and a missing seed stops the load.
+- `fit_final(rows, truth, settings, device, base=None)` refits chosen settings on all of 1980–2017, once per seed. `save_final` and `load_final` write and read one folder per seed, and a missing seed stops the load.
 - `predict_xgboost(models, features, name, base=None)` returns forecasts in the format `scoring.score` takes.
 - `search(features, truth)` and `fit_models(features, truth, settings, device)` are the older route, for notebook 03.
 - `save_models(models, search_table, directory)` and `load_models(directory)` write and read a folder of models, which is git-ignored. `data/models/xgboost` is rebuilt by notebook 03, and `data/models/xgboost_final` by notebook 04.
@@ -387,18 +387,19 @@ The search winners were `max_depth` 3, `learning_rate` 0.02, `subsample` 0.6 for
 
 ## final_model.py
 
-**What it does:** builds the final consensus: CLIPER and 5-seed XGBoost, both refitted on all of 1980–2017, ready for the test split. It scores nothing.
+**What it does:** builds the final models, all refitted on 1980–2017, ready for the test split: CLIPER, 5-seed XGBoost and 5-seed `xgb_residual`. It scores nothing.
 
 **Inputs and outputs:**
-- `fit_final_consensus(rows, truth, settings, device)` returns a `FinalConsensus` holding both members.
-- `final_consensus_forecast(final, rows)` returns forecasts in the format `scoring.score` takes.
-- `save_final_consensus(final, search_table, directory)` and `load_final_consensus(directory)` write and read both members in `data/models/xgboost_final`: one folder per seed, plus `cliper.pkl`.
+- `fit_final_models(rows, truth, xgboost_settings, residual_settings, device)` returns a `FinalModels` holding the three fitted models.
+- `final_forecasts(final, rows)` returns forecasts from all five models, in the format `scoring.score` takes. Persistence has nothing to fit, and consensus is worked out from the forecasts.
+- `save_final_models(final, xgboost_search, residual_search, directory)` and `load_final_models(directory)` write and read everything in `data/models/xgboost_final`: `cliper.pkl`, XGBoost's `seed42` to `seed46` folders, and the same five for `xgb_residual` in `residual/`.
 
 **Why it's built this way:**
-- It has its own file because `consensus.py` reads only the scoring format and knows nothing about any model, and `xgb_model.py` knows nothing about CLIPER's fit.
+- It has its own file because the final models depend on each other. Consensus averages CLIPER and XGBoost, and `xgb_residual` corrects CLIPER, while `consensus.py` knows nothing about any model.
 - Cross-validation's models each saw four blocks, and their job was to measure a model. Using all five blocks gives the final one more storms to learn from.
-- It can't be scored on 1980–2017, since it has seen those storms, so the cross-validated score stands in for it until the test split.
-- Both members filter to the development seasons themselves, so passing the full table can't reach test. In the tests, corrupting every made-up storm after 2017 left the forecasts identical.
+- One CLIPER is shared, so `xgb_residual` corrects the same CLIPER that sits beside it at test time. Its target uses CLIPER's forecasts on storms CLIPER was fitted on, as it did in each fold.
+- The final models can't be scored on 1980–2017, since they've seen those storms, so the cross-validated scores stand in for them until the test split. That only works if they're the same models, so two tests check that the final XGBoost and `xgb_residual` give exactly what the measured forecaster gives when handed every block.
+- The filter is at the top of `fit_final_models`, so passing the full table can't reach test. In the tests, corrupting every made-up storm after 2017 left the forecasts identical.
 - CLIPER is saved as well as XGBoost, although it refits in moments, so test day uses exactly the models fitted here.
 - CLIPER is pickled, which is the simple way to keep a scikit-learn model. Pickle runs code as it loads, so only read a file you wrote.
 
