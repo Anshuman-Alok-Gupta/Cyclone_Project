@@ -63,8 +63,8 @@ This is Project 1 of 3, leading to benchmarking AI weather models (GraphCast, Pa
     - Score: mean skill vs CLIPER across +24, +48 and +72 h (equal weight), from the 5-fold blocked cross-validation
       out-of-fold forecasts. One number leaves no room to pick a flattering lead afterwards, equal weight stops 72 h's
       larger errors from deciding everything, and out-of-fold forecasts come from models that never saw those storms.
-    - Primary model: the highest score. If two scores are exactly equal, the simpler wins (XGBoost, then consensus, then
-      LSTM, then pretrained models). There's no uncertainty-based tie-break: "close enough" is a judgement that could be
+    - Primary model: the highest score. If two scores are exactly equal, the simpler wins (XGBoost, then xgb_residual, then
+      consensus, then LSTM, then pretrained models). There's no uncertainty-based tie-break: "close enough" is a judgement that could be
       argued either way, and every candidate is reported as a secondary result with its own test interval anyway.
     - Report each candidate's score with a storm-bootstrap 95% interval, for information only; it doesn't affect the
       choice. It shows how close the race was without reopening it.
