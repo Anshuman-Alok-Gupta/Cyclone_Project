@@ -420,6 +420,7 @@ Mean error on the validation split, on identical cases, with the winning setting
 - `plot_error_by_lead(summary, title)` takes the table from `scoring.summarize` and returns a chart of mean error against lead time.
 - `plot_forecasts(truth, forecasts, sid, init_time, title)` returns a map of one storm's true track with each model's forecast from one start time. `labels_below=True` moves the labels below the track, for forecasts that run through the space above it.
 - `plot_feature_importance(shares, title)` takes the table from `xgb_model.gain_shares` and returns ranked bars of each input's share of gain.
+- `plot_storm_gaps(gaps, model, title)` takes the table from `cv.storm_gaps` and returns one sorted bar per storm.
 
 **Why it's built this way:**
 - A map shows position errors that counts can't.
@@ -434,6 +435,8 @@ Mean error on the validation split, on identical cases, with the winning setting
 - The error chart's y axis starts at 0 km, so the gap between lines reads as its true share of the error.
 - Importance bars are one colour, XGBoost's, because they're one model's numbers. Colouring them by size would only repeat what their length shows.
 - Only bars of 5% or more are labelled. A number on every bar would hide the few that matter, and the notebook's table has the rest.
+- The storm chart's bars are sorted, so it shows whether a lead comes from most storms or a few big ones. They're blue or red for which side of zero they fall on, not in model colours, because yellow and pink fail the palette check beside CLIPER's orange. A pair of opposites also reads as "better" and "worse" for any model.
+- Five model colours pass the check for lines and bars side by side, but not for every pair at once. So they're safe for a chart like the error-by-lead lines, with labels, and shouldn't all share a scatter plot.
 
 **Reused by:** `plot_forecasts` and `plot_error_by_lead` work for any model in the scoring format, including the AI-model tracks in Project 3.
 

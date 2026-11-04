@@ -11,6 +11,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from matplotlib.axes import Axes
 from matplotlib.colors import LinearSegmentedColormap, Normalize
+from matplotlib.patches import Patch
 from matplotlib.ticker import PercentFormatter
 
 # Fixed to the range of the cleaned table (10-150 kt), not to each storm's own
@@ -36,8 +37,26 @@ MAP_PADDING_DEG = 4
 
 # One fixed colour per model, so a model looks the same on every chart even when
 # another is added or left out. Add new models here rather than cycling colours.
-MODEL_LABELS = {"persistence": "Persistence", "cliper": "CLIPER", "xgboost": "XGBoost"}
-MODEL_COLORS = {"persistence": "#2a78d6", "cliper": "#eb6834", "xgboost": "#1baf7a"}
+MODEL_LABELS = {
+    "persistence": "Persistence",
+    "cliper": "CLIPER",
+    "xgboost": "XGBoost",
+    "xgb_residual": "XGBoost residual",
+    "consensus": "Consensus",
+}
+MODEL_COLORS = {
+    "persistence": "#2a78d6",
+    "cliper": "#eb6834",
+    "xgboost": "#1baf7a",
+    "xgb_residual": "#eda100",
+    "consensus": "#e87ba4",
+}
+
+# Which side of zero a storm falls on, for comparisons of one model with another. These
+# aren't model colours, because yellow and pink sit too close to CLIPER's orange to be
+# told apart. A pair of opposites also says "better" and "worse" for any model.
+BETTER_COLOR = "#2a78d6"
+WORSE_COLOR = "#e34948"
 
 # Bars at or above this share are labelled. A number on every bar would hide the few
 # that matter, and the table beside the chart has the rest.
@@ -325,6 +344,73 @@ def plot_feature_importance(shares: pd.DataFrame, title: str, ax: Axes | None = 
     for side in ("top", "right", "bottom"):
         ax.spines[side].set_visible(False)
     ax.spines["left"].set_color(COAST_COLOR)
+    ax.set_title(title, fontsize=12, color=TEXT_COLOR, loc="left")
+    return ax
+
+
+def plot_storm_gaps(
+    gaps: pd.DataFrame,
+    model: str,
+    title: str,
+    reference: str = "cliper",
+    ax: Axes | None = None,
+) -> Axes:
+    """Plot one bar per storm: a model's mean error minus a reference model's.
+
+    Bars below zero are storms where the model did better. They're sorted, so the chart
+    shows at a glance whether a lead comes from most storms or from a few big ones.
+    Individual storms aren't labelled, because there are too many, and it's the shape
+    that matters. The table from ``cv.storm_gaps`` has each one.
+
+    Args:
+        gaps: the table from ``cv.storm_gaps``.
+        model: the model the gaps are for.
+        title: the chart title.
+        reference: the model it was compared with.
+        ax: an existing axes to draw on. Leave it out to create a new figure.
+
+    Returns:
+        The axes, so a caller can add to it or save it.
+    """
+    if ax is None:
+        _, ax = plt.subplots(figsize=(9, 5), layout="constrained")
+    ax.set_facecolor(OCEAN_COLOR)
+    ax.figure.set_facecolor(OCEAN_COLOR)
+
+    ordered = gaps["gap_km"].sort_values().to_numpy()
+    better = ordered < 0
+    ax.bar(
+        range(len(ordered)),
+        ordered,
+        width=0.8,
+        color=[BETTER_COLOR if won else WORSE_COLOR for won in better],
+    )
+    ax.axhline(0, color=COAST_COLOR, linewidth=1)
+
+    ax.set_xlim(-1, len(ordered))
+    ax.set_xticks([])
+    ax.set_xlabel(f"{len(ordered)} storms, sorted by the gap", color=MUTED_TEXT_COLOR, fontsize=10)
+    ax.set_ylabel(
+        f"{MODEL_LABELS[model]} minus {MODEL_LABELS[reference]},\nmean error per storm (km)",
+        color=MUTED_TEXT_COLOR,
+        fontsize=10,
+    )
+    ax.tick_params(colors=MUTED_TEXT_COLOR, labelsize=10, length=0)
+    ax.grid(axis="y", color=GRID_COLOR, linewidth=0.8)
+    ax.set_axisbelow(True)
+    for side in ("top", "right", "left", "bottom"):
+        ax.spines[side].set_visible(False)
+
+    ax.legend(
+        handles=[
+            Patch(color=BETTER_COLOR, label=f"{MODEL_LABELS[model]} better: {better.sum()} storms"),
+            Patch(color=WORSE_COLOR, label=f"{MODEL_LABELS[reference]} better: {(~better).sum()} storms"),
+        ],
+        loc="upper left",
+        fontsize=10,
+        frameon=False,
+        labelcolor=TEXT_COLOR,
+    )
     ax.set_title(title, fontsize=12, color=TEXT_COLOR, loc="left")
     return ax
 
