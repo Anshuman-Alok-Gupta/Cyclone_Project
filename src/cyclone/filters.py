@@ -11,6 +11,9 @@ FIRST_SEASON = 1980
 LAST_SEASON = 2024
 SYNOPTIC_HOURS = (0, 6, 12, 18)
 
+# IBTrACS's derived columns STORM_SPEED, STORM_DIR and DIST2LAND are left out on
+# purpose: they come from the combined LAT/LON, not JTWC positions, and the first
+# two also use a future position. See "Model input rules" in CLAUDE.md.
 KEEP_COLUMNS = [
     "SID",
     "NAME",
@@ -20,9 +23,6 @@ KEEP_COLUMNS = [
     "USA_LON",
     "USA_WIND",
     "USA_PRES",
-    "DIST2LAND",
-    "STORM_SPEED",
-    "STORM_DIR",
 ]
 
 

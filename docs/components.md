@@ -44,11 +44,12 @@ The project decisions behind these modules are in `CLAUDE.md`.
 
 **Inputs and outputs:**
 - Each filter takes a table and returns the rows it keeps.
-- `clean_ni(df)` takes the raw table and returns 11 columns: `SID`, `NAME`, `SEASON`, `ISO_TIME`, `USA_LAT`, `USA_LON`, `USA_WIND`, `USA_PRES`, `DIST2LAND`, `STORM_SPEED`, `STORM_DIR`.
+- `clean_ni(df)` takes the raw table and returns 8 columns: `SID`, `NAME`, `SEASON`, `ISO_TIME`, `USA_LAT`, `USA_LON`, `USA_WIND`, `USA_PRES`.
 
 **Why it's built this way:**
 - Small separate functions can be reused one at a time and read like the list in `CLAUDE.md`.
 - `clean_ni` prints counts after every step, so a changed total can be traced to one filter.
+- Only columns allowed as inputs or scoring data are kept. `STORM_SPEED`, `STORM_DIR` and `DIST2LAND` were removed for the reasons under "Before building features".
 
 | After filter | Rows | Storms |
 |---|---:|---:|
@@ -106,14 +107,17 @@ The project decisions behind these modules are in `CLAUDE.md`.
 
 ## Before building features
 
-These don't affect the cleaned table, but they matter for the next step.
+The rules these lead to are in "Model input rules" in `CLAUDE.md`.
 
-- **`STORM_SPEED` and `STORM_DIR` shouldn't be model inputs as they are.**
-  - They're kept in the table as requested, but they don't come from JTWC positions. They match a centred difference of the combined `LAT`/`LON` over the points 3 h either side (96.7% within 1 kt, compared with 66.9% for the same calculation on `USA_LAT`/`USA_LON`, and 56% for a backward-only one).
-  - So they use the source `CLAUDE.md` rules out, and they use a position 3 h in the future, which a real forecast wouldn't have.
-  - Compute motion from `USA_LAT`/`USA_LON` at the current and previous fixes instead.
-- **`DIST2LAND` may have the same source problem.** This wasn't tested, but it probably comes from the combined position too. It uses no future data, as far as is known.
+- **`STORM_SPEED` and `STORM_DIR` were dropped from the cleaned table.**
+  - They don't come from JTWC positions. They match a centred difference of the combined `LAT`/`LON` over the points 3 h either side (96.7% within 1 kt, compared with 66.9% for the same calculation on `USA_LAT`/`USA_LON`, and 56% for a backward-only one).
+  - So they use the source `CLAUDE.md` rules out, and they use a position 3 h after the forecast start, which a real forecast wouldn't have.
+  - Calculate motion from `USA_LAT`/`USA_LON` at the current and previous fixes instead.
+- **`DIST2LAND` was dropped too, and will be recomputed from `USA_LAT`/`USA_LON` in the features step.**
+  - It follows the combined position. On the 1,000 cleaned rows under 600 km from land where the combined and JTWC positions are at least 25 km apart, distance to a Natural Earth 10m coastline was within 10 km of `DIST2LAND` for 81.6% of rows using the combined position, but 26.7% using JTWC's (median error 2.7 km against 26.9 km).
+  - It uses no future data. The same calculation from the combined position 3 h later matched 30.9% of those rows, and 3 h earlier 33.2%.
+  - The test coastline isn't the one IBTrACS uses, so the comparison between sources is what counts, not the size of the errors.
 - **`USA_PRES` has no values before 2001.** It's filled for 35% of train rows, but 100% of val and 99.5% of test. A model given this column would see a different pattern in testing than in training, and could learn "missing means old".
 - **`USA_WIND` is missing in 32 rows,** all in season 1980. They make up two whole storms.
-- **Rows aren't always 6 h apart.** Four storms have a 12 h gap where a fix was dropped (`2000331N09092`, `2005007N04085`, `2005330N09096`, `2019337N11072`). Build the 24/48/72 h targets by matching timestamps, not by shifting 4, 8 or 12 rows.
+- **Rows aren't always 6 h apart.** Four storms have a 12 h gap where an interpolated fix (`P` or `I`) was removed: `2000331N09092`, `2005007N04085` and `2005330N09096` in train, `2019337N11072` in test. Build the 24/48/72 h targets by matching timestamps, not by shifting 4, 8 or 12 rows.
 - **Some storms are too short for every lead time.** 11 storms span less than 24 h, 48 span less than 72 h, and 3 are a single row.

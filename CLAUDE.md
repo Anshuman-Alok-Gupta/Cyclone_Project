@@ -46,6 +46,19 @@ This is Project 1 of 3, leading to benchmarking AI weather models (GraphCast, Pa
   - excluded: 2025 onward (provisional data)
 - Scoring harness: great-circle error in km. It must be a standalone module that accepts any table of forecast positions, so it can score AI-model output in Project 3.
 
+## Model input rules
+- **No future information.** A model input may only use information available at the forecast start time (t0):
+  JTWC fixes at t0 and earlier. Never anything after t0.
+- **No IBTrACS derived columns.** Never use IBTrACS's derived columns (`STORM_SPEED`, `STORM_DIR`, `DIST2LAND`,
+  `LANDFALL`, etc.) as inputs unless they're verified as JTWC-based and free of future information.
+  Calculate motion from `USA_LAT`/`USA_LON` at the current and previous fixes.
+  - Why: `STORM_SPEED`/`STORM_DIR` are a centred difference of the combined `LAT`/`LON`, so they use the position 3 h
+    after t0. `DIST2LAND` uses no future data but also follows the combined position, so it's recomputed from
+    `USA_LAT`/`USA_LON` in the features step. Evidence is in `docs/components.md`.
+- **Match fixes by timestamp.** The cleaned data has 4 storms with a 12 h gap, where an interpolated fix was removed
+  (3 in train, 1 in test). Never assume consecutive rows are 6 h apart; always match fixes by timestamp.
+- **Scope wording for results:** "JTWC-warned systems in the North Indian Ocean", not all depressions.
+
 ## Models
 - Baselines: persistence and CLIPER.
 - Models: XGBoost first, then LSTM.
