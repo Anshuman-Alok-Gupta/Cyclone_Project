@@ -50,8 +50,9 @@ def make_init_times(df: pd.DataFrame) -> pd.DataFrame:
 
     Returns:
         One row per start time, with columns SID, init_time, split, lat, lon, wind,
-        then lat_m06, lon_m06, ... lon_m24, the position 6 to 24 h before t0. wind is
-        USA_WIND at t0 and can be missing in 1980.
+        then lat_m06, lon_m06, wind_m06, ... wind_m24, the position and wind 6 to 24 h
+        before t0. wind is USA_WIND and can be missing in 1980. A blank wind doesn't
+        remove a row: a past fix only has to exist, with a position.
     """
     table = df[["SID", "ISO_TIME", "split", "USA_LAT", "USA_LON", "USA_WIND"]].rename(
         columns={
@@ -63,8 +64,12 @@ def make_init_times(df: pd.DataFrame) -> pd.DataFrame:
     )
 
     for hours in HISTORY_HOURS:
-        past = df[["SID", "ISO_TIME", "USA_LAT", "USA_LON"]].rename(
-            columns={"USA_LAT": f"lat_m{hours:02d}", "USA_LON": f"lon_m{hours:02d}"}
+        past = df[["SID", "ISO_TIME", "USA_LAT", "USA_LON", "USA_WIND"]].rename(
+            columns={
+                "USA_LAT": f"lat_m{hours:02d}",
+                "USA_LON": f"lon_m{hours:02d}",
+                "USA_WIND": f"wind_m{hours:02d}",
+            }
         )
         # Move each past fix forward by `hours` so it lines up with the t0 it's
         # history for. validate="1:1" stops the run if a storm repeats a timestamp.

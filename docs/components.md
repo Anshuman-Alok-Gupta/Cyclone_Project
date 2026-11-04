@@ -111,7 +111,7 @@ The project decisions behind these modules are in `CLAUDE.md`.
 
 **Inputs and outputs:**
 - `make_truth(df)` returns `SID`, `valid_time`, `lat`, `lon`, one row per fix.
-- `make_init_times(df)` returns every fix with JTWC fixes at exactly 6, 12, 18 and 24 h earlier: `SID`, `init_time`, `split`, `lat`, `lon`, `wind`, then `lat_m06` to `lon_m24`.
+- `make_init_times(df)` returns every fix with JTWC fixes at exactly 6, 12, 18 and 24 h earlier: `SID`, `init_time`, `split`, `lat`, `lon`, `wind`, then `lat_m06`, `lon_m06`, `wind_m06` through to `wind_m24`.
 - `with_truth_at(init_times, truth, lead_h)` returns the start times that have a true position `lead_h` hours later, with `truth_lat` and `truth_lon` added.
 
 **Why it's built this way:**
@@ -119,7 +119,8 @@ The project decisions behind these modules are in `CLAUDE.md`.
 - Past fixes are matched by timestamp, as `CLAUDE.md` requires. Shifting by 4 rows would accept 4,683 start times, and 5 of those have a 12 h gap in their history, so their "24 h ago" is really 30 h ago. Matching gives the correct 4,678.
 - Deleting every fix after a storm's midpoint and rebuilding left the history of all 1,910 remaining start times unchanged, which confirms nothing after t0 is used.
 - `with_truth_at` is the one place a start time meets a future position, so a future leak has only one place to come from.
-- `USA_WIND` at t0 is missing for 24 start times, all in 1980. They stay in, since the baselines don't use wind, and later models must handle them.
+- `USA_WIND` is missing for 24 start times, all in train, in 1980. The same 24 rows have no wind at t0, 12 h or 24 h earlier, because they're the two storms with no wind at all. They stay in, since the baselines don't use wind, and `features.py` leaves them blank for XGBoost to handle.
+- Past winds are carried alongside past positions because wind change is a model input. A blank wind doesn't remove a row: a past fix only has to exist, with a position, so adding them left all the counts unchanged.
 
 **Reused by:** baselines, XGBoost and the LSTM. Using the same start times is what makes their scores comparable.
 
