@@ -7,8 +7,10 @@ just wrong ones. So the expected counts are written down here and checked every 
 
 import pandas as pd
 
-from cyclone.filters import FIRST_SEASON, LAST_SEASON, SYNOPTIC_HOURS
+from cyclone.features import distance_to_land_km
+from cyclone.filters import FIRST_SEASON, LAST_SEASON, SYNOPTIC_HOURS, main_track
 from cyclone.samples import LEAD_HOURS, with_truth_at
+from cyclone.scoring import great_circle_km
 
 # Verified against IBTrACS v04r01 on 2026-11-04.
 EXPECTED_ROWS = 5_694
@@ -21,6 +23,13 @@ EXPECTED_CASES_BY_SPLIT = {
     "val": {24: 438, 48: 340, 72: 256},
     "test": {24: 749, 48: 578, 72: 430},
 }
+
+# DIST2LAND follows the combined position, so it's only comparable where JTWC's position
+# is close to that one.
+DIST2LAND_MAX_SEPARATION_KM = 10
+# Far above today's 5 km. A gap beyond this means a broken calculation, such as swapped
+# coordinates or wrong units, not the known difference between the two land masks.
+DIST2LAND_MAX_MEDIAN_GAP_KM = 10
 
 
 def _find_likely_causes(df: pd.DataFrame) -> list[str]:
@@ -147,3 +156,47 @@ def check_samples(init_times: pd.DataFrame, truth: pd.DataFrame) -> None:
     for split, counts in case_counts.items():
         by_lead = ", ".join(f"+{lead_h} h {count:,}" for lead_h, count in counts.items())
         print(f"  {split:<5} {init_counts[split]:>5,} init times; cases {by_lead}")
+
+
+def check_dist_to_land(df: pd.DataFrame, raw: pd.DataFrame) -> None:
+    """Compare recomputed distance to land with IBTrACS DIST2LAND, and report it.
+
+    This is a sanity check only. DIST2LAND is read from the raw table here, stays inside
+    this function, and never becomes a model input. The cleaned table doesn't even hold
+    it, which is why the raw table is needed.
+
+    Expect close agreement over land and near large coasts, and a long tail elsewhere.
+    The tail isn't an error: the land mask behind DIST2LAND leaves out islands that
+    Natural Earth has, such as the Maldives. docs/components.md has the evidence.
+
+    Args:
+        df: the cleaned table.
+        raw: the raw table from ``io.load_ibtracs``.
+
+    Raises:
+        AssertionError: if the median gap shows the calculation itself is broken.
+    """
+    combined = main_track(raw)[["SID", "ISO_TIME", "LAT", "LON", "DIST2LAND"]]
+    rows = df.merge(combined, on=["SID", "ISO_TIME"], how="left", validate="1:1")
+    separation_km = great_circle_km(rows["USA_LAT"], rows["USA_LON"], rows["LAT"], rows["LON"])
+    rows = rows[separation_km <= DIST2LAND_MAX_SEPARATION_KM]
+
+    ours = distance_to_land_km(rows["USA_LAT"], rows["USA_LON"])
+    theirs = rows["DIST2LAND"].to_numpy()
+    gap = abs(ours - theirs)
+    median_gap = float(pd.Series(gap).median())
+
+    print(
+        f"Distance to land against DIST2LAND, on {len(rows):,} of {len(df):,} rows with the "
+        f"JTWC and combined positions within {DIST2LAND_MAX_SEPARATION_KM} km:"
+    )
+    print(f"  median gap {median_gap:.1f} km, 90th percentile {pd.Series(gap).quantile(0.9):.0f} km")
+    print(f"  within 10 km: {(gap <= 10).mean():.1%}, within 25 km: {(gap <= 25).mean():.1%}")
+    print(f"  over land: {((ours == 0) & (theirs == 0)).sum()} rows in both, of {(ours == 0).sum()} "
+          f"here and {(theirs == 0).sum()} in IBTrACS")
+
+    if median_gap > DIST2LAND_MAX_MEDIAN_GAP_KM:
+        raise AssertionError(
+            f"Median gap to DIST2LAND is {median_gap:.1f} km, above the "
+            f"{DIST2LAND_MAX_MEDIAN_GAP_KM} km limit. Check distance_to_land_km."
+        )

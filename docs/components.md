@@ -95,6 +95,7 @@ The project decisions behind these modules are in `CLAUDE.md`.
 - `check_expected(df)` takes the table with its `split` column. It prints a confirmation if all counts match. Otherwise it raises an `AssertionError` listing each difference and the likely causes.
 - `check_samples(init_times, truth)` does the same for the start times and for the cases with truth at each lead time.
 - `count_cases(init_times, truth)` returns those case counts as `{split: {lead_h: count}}`.
+- `check_dist_to_land(df, raw)` compares `features.distance_to_land_km` with IBTrACS `DIST2LAND` and prints the agreement. It stops the run only if the median gap passes 10 km, which would mean a broken calculation.
 
 **Why it's built this way:**
 - Wrong data still trains and still scores, so nothing downstream would notice.
@@ -108,6 +109,18 @@ The project decisions behind these modules are in `CLAUDE.md`.
 | train | 3,203 | 2,515 | 1,869 | 1,324 |
 | val | 542 | 438 | 340 | 256 |
 | test | 933 | 749 | 578 | 430 |
+
+`DIST2LAND` is a sanity check only, never an input. It stays inside `check_dist_to_land`, and the cleaned table doesn't hold it. On the 2,645 rows where the JTWC and combined positions are within 10 km:
+
+| Land mask | Median gap | 90th percentile | Within 10 km | Correlation |
+|---|---:|---:|---:|---:|
+| All Natural Earth land (what `features.py` uses) | 5.1 km | 343 km | 63.5% | 0.84 |
+| Without islands under 5,000 km² (one-off test) | 2.0 km | 7.6 km | 92.7% | 0.99 |
+
+- They agree closely over land (376 rows in both, of 383 each) and near large coasts, but not everywhere.
+- The gap comes from the land masks, not the calculation. `DIST2LAND` leaves out small islands that Natural Earth has. At 1.6°N 72.4°E, next to the Maldives, it says 908 km where the nearest Natural Earth land is 95 km away.
+- It isn't a simple size cut. Removing Sri Lanka as well makes agreement worse (within 10 km falls to 82.7%), so Sri Lanka is in the IBTrACS mask. With the 5,000 km² cut, the 159 rows still over 25 km apart lie almost entirely in the Arabian Sea around Socotra (3,600 km²), with `DIST2LAND` the smaller value, so Socotra seems to be in it too.
+- `features.py` keeps all Natural Earth land, since a model only needs a true distance from JTWC's position, not a match to `DIST2LAND`.
 
 **Reused by:** every run of the notebooks. If the data is re-downloaded on purpose, review the differences and then update the numbers here and in `CLAUDE.md`.
 
