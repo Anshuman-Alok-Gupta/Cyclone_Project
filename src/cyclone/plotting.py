@@ -11,6 +11,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from matplotlib.axes import Axes
 from matplotlib.colors import LinearSegmentedColormap, Normalize
+from matplotlib.ticker import PercentFormatter
 
 # Fixed to the range of the cleaned table (10-150 kt), not to each storm's own
 # range, so the same colour means the same wind on every map.
@@ -35,8 +36,12 @@ MAP_PADDING_DEG = 4
 
 # One fixed colour per model, so a model looks the same on every chart even when
 # another is added or left out. Add new models here rather than cycling colours.
-MODEL_LABELS = {"persistence": "Persistence", "cliper": "CLIPER"}
-MODEL_COLORS = {"persistence": "#2a78d6", "cliper": "#eb6834"}
+MODEL_LABELS = {"persistence": "Persistence", "cliper": "CLIPER", "xgboost": "XGBoost"}
+MODEL_COLORS = {"persistence": "#2a78d6", "cliper": "#eb6834", "xgboost": "#1baf7a"}
+
+# Bars at or above this share are labelled. A number on every bar would hide the few
+# that matter, and the table beside the chart has the rest.
+LABEL_MIN_SHARE = 0.05
 
 
 def _select_storm(
@@ -277,6 +282,53 @@ def plot_error_by_lead(summary: pd.DataFrame, title: str, ax: Axes | None = None
     return ax
 
 
+def plot_feature_importance(shares: pd.DataFrame, title: str, ax: Axes | None = None) -> Axes:
+    """Plot each input's share of XGBoost's gain as ranked bars, largest at the top.
+
+    Bars are one colour, XGBoost's, because they're one model's numbers and the length
+    already shows the size. They start at 0, so lengths compare fairly.
+
+    Args:
+        shares: the table from ``xgb_model.gain_shares``.
+        title: the chart title.
+        ax: an existing axes to draw on. Leave it out to create a new figure.
+
+    Returns:
+        The axes, so a caller can add to it or save it.
+    """
+    if ax is None:
+        _, ax = plt.subplots(figsize=(8, 6.5), layout="constrained")
+    ax.set_facecolor(OCEAN_COLOR)
+    ax.figure.set_facecolor(OCEAN_COLOR)
+
+    ranked = shares["mean"].sort_values()  # barh draws the first row at the bottom
+    ax.barh(ranked.index, ranked.to_numpy(), height=0.72, color=MODEL_COLORS["xgboost"])
+    for row, share in enumerate(ranked):
+        if share >= LABEL_MIN_SHARE:
+            ax.annotate(
+                f"{share:.0%}",
+                xy=(share, row),
+                xytext=(6, 0),
+                textcoords="offset points",
+                fontsize=10,
+                color=TEXT_COLOR,
+                va="center",
+            )
+
+    ax.xaxis.set_major_formatter(PercentFormatter(xmax=1, decimals=0))
+    ax.set_xlim(left=0)
+    ax.margins(y=0.01)
+    ax.set_xlabel("Share of total gain, averaged over the six models", color=MUTED_TEXT_COLOR, fontsize=10)
+    ax.tick_params(colors=MUTED_TEXT_COLOR, labelsize=10, length=0)
+    ax.grid(axis="x", color=GRID_COLOR, linewidth=0.8)
+    ax.set_axisbelow(True)
+    for side in ("top", "right", "bottom"):
+        ax.spines[side].set_visible(False)
+    ax.spines["left"].set_color(COAST_COLOR)
+    ax.set_title(title, fontsize=12, color=TEXT_COLOR, loc="left")
+    return ax
+
+
 def plot_forecasts(
     truth: pd.DataFrame,
     forecasts: pd.DataFrame,
@@ -284,6 +336,7 @@ def plot_forecasts(
     init_time: pd.Timestamp,
     title: str,
     ax: Axes | None = None,
+    labels_below: bool = False,
 ) -> Axes:
     """Map one storm's true track with each model's forecast from one start time.
 
@@ -298,6 +351,8 @@ def plot_forecasts(
         title: the map title.
         ax: an existing map axes. It must use a cartopy projection. Leave it out
             to create a new figure.
+        labels_below: put the labels below the track rather than above it, for
+            forecasts that run through the space above.
 
     Returns:
         The map axes, so a caller can add to it or save it.
@@ -369,6 +424,8 @@ def plot_forecasts(
     # Mark the truth at each lead time, so the eye can pair it with a forecast dot.
     # The labels stand well off the track with a leader line: right beside a true
     # position they'd land next to a forecast dot and appear to name that dot instead.
+    fix_label_offset = (-26, -42) if labels_below else (26, 42)
+    start_label_offset = (24, -26) if labels_below else (24, 26)
     for lead_h in sorted(chosen["lead_h"].unique()):
         valid_time = init_time + pd.Timedelta(hours=int(lead_h))
         fix = track[track["valid_time"] == valid_time]
@@ -376,10 +433,10 @@ def plot_forecasts(
             continue
         lon, lat = fix["lon"].iloc[0], fix["lat"].iloc[0]
         mark_fix(lon, lat)
-        _label_point(ax, lon, lat, f"True +{lead_h} h", (26, 42))
+        _label_point(ax, lon, lat, f"True +{lead_h} h", fix_label_offset)
 
     mark_fix(start["lon"], start["lat"])
-    _label_point(ax, start["lon"], start["lat"], f"Start {init_time:%d %b %H}Z", (24, 26))
+    _label_point(ax, start["lon"], start["lat"], f"Start {init_time:%d %b %H}Z", start_label_offset)
     ax.legend(loc="lower left", fontsize=9, frameon=False)
     ax.set_title(title, fontsize=12, color=TEXT_COLOR, loc="left")
     return ax
