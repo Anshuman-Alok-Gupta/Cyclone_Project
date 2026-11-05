@@ -46,3 +46,8 @@ def xgboost_dir() -> Path:
 def xgboost_final_dir() -> Path:
     """Return the folder holding the final models, refitted on all development seasons."""
     return data_dir() / "models" / "xgboost_final"
+
+
+def lstm_dir() -> Path:
+    """Return the folder holding the LSTM's search results and cross-validated networks."""
+    return data_dir() / "models" / "lstm"

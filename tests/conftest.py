@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from cyclone import cv
+from cyclone import cv, lstm_model
 from cyclone.features import build_features
 from cyclone.folds import FOLD_SEASONS
 from cyclone.samples import make_init_times, make_truth
@@ -33,6 +33,15 @@ def make_storm(season: int, rng: np.random.Generator) -> pd.DataFrame:
             "USA_WIND": 30.0 + rng.uniform(0.5, 3.0) * steps,
         }
     )
+
+
+@pytest.fixture(scope="session", autouse=True)
+def quick_lstm_training():
+    """Keep each LSTM fit to a few epochs, since these tests check rules, not forecasts."""
+    patch = pytest.MonkeyPatch()
+    patch.setattr(lstm_model, "MAX_EPOCHS", 3)
+    yield
+    patch.undo()
 
 
 @pytest.fixture(scope="session")
