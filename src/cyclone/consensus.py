@@ -14,9 +14,14 @@ import pandas as pd
 from cyclone.scoring import CASE_COLUMNS, FORECAST_COLUMNS
 
 CONSENSUS_NAME = "consensus"
+CONSENSUS_LSTM_NAME = "consensus_lstm"
 
 
-def consensus(forecasts: pd.DataFrame, members: tuple[str, ...]) -> pd.DataFrame:
+def consensus(
+    forecasts: pd.DataFrame,
+    members: tuple[str, ...],
+    name: str = CONSENSUS_NAME,
+) -> pd.DataFrame:
     """Return the average of the members' forecast positions, one row per case.
 
     Latitude and longitude are averaged separately. That isn't exactly the midpoint on a
@@ -31,9 +36,10 @@ def consensus(forecasts: pd.DataFrame, members: tuple[str, ...]) -> pd.DataFrame
         forecasts: forecasts in the scoring format, holding every member. Any other
             columns, such as "fold", are kept if they don't differ within a case.
         members: the models to average, as named in the model column.
+        name: the name to give the average in the model column.
 
     Returns:
-        Forecasts in the same format, with the model column set to CONSENSUS_NAME.
+        Forecasts in the same format, with the model column set to name.
 
     Raises:
         ValueError: if a member is missing altogether, or a case lacks a member.
@@ -50,6 +56,6 @@ def consensus(forecasts: pd.DataFrame, members: tuple[str, ...]) -> pd.DataFrame
     if incomplete.any():
         raise ValueError(f"{incomplete.sum()} cases don't have a forecast from every member.")
 
-    averaged = grouped[["lat", "lon"]].mean().reset_index().assign(model=CONSENSUS_NAME)
+    averaged = grouped[["lat", "lon"]].mean().reset_index().assign(model=name)
     extras = [column for column in keys if column not in CASE_COLUMNS]
     return averaged[[*FORECAST_COLUMNS, *extras]]
