@@ -43,6 +43,9 @@ MODEL_LABELS = {
     "xgboost": "XGBoost",
     "xgb_residual": "XGBoost residual",
     "consensus": "Consensus",
+    "lstm": "LSTM",
+    "lstm_24h": "LSTM, 24 h history",
+    "consensus_lstm": "Consensus with LSTM",
 }
 MODEL_COLORS = {
     "persistence": "#2a78d6",
@@ -50,6 +53,11 @@ MODEL_COLORS = {
     "xgboost": "#1baf7a",
     "xgb_residual": "#eda100",
     "consensus": "#e87ba4",
+    # The maps put these with CLIPER's orange and XGBoost's aqua. The palette's next slot,
+    # green, is almost the same as that orange for red-weak vision, so it's skipped.
+    "lstm": "#6250d6",
+    "lstm_24h": "#9085e9",
+    "consensus_lstm": "#a02c6e",
 }
 
 # Which side of zero a storm falls on, for comparisons of one model with another. These
