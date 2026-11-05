@@ -58,13 +58,15 @@ This is Project 1 of 3, leading to benchmarking AI weather models (GraphCast, Pa
   - The test split is scored exactly once, at the end of Project 1, after the LSTM and West Pacific pretraining steps.
   - **Primary result: the primary model compared with CLIPER.** The rule below picks that model at the point test is
     scored, with no judgement call left to make, so that nothing about the choice can bend towards a result.
-    - Candidates: every model except persistence and CLIPER, which are references, not candidates. They're what a
-      candidate has to beat, so they can't also be in the race.
+    - Candidates: xgboost, xgb_residual, consensus, lstm, consensus_lstm (the average of the CLIPER, XGBoost and LSTM
+      forecast positions), then pretrained models. Persistence and CLIPER are references, not candidates: they're what
+      a candidate has to beat, so they can't also be in the race. The LSTM given only 24 h of history is a check on
+      where any gain comes from, not a candidate.
     - Score: mean skill vs CLIPER across +24, +48 and +72 h (equal weight), from the 5-fold blocked cross-validation
       out-of-fold forecasts. One number leaves no room to pick a flattering lead afterwards, equal weight stops 72 h's
       larger errors from deciding everything, and out-of-fold forecasts come from models that never saw those storms.
     - Primary model: the highest score. If two scores are exactly equal, the simpler wins (XGBoost, then xgb_residual, then
-      consensus, then LSTM, then pretrained models). There's no uncertainty-based tie-break: "close enough" is a judgement that could be
+      consensus, then lstm, then consensus_lstm, then pretrained models). There's no uncertainty-based tie-break: "close enough" is a judgement that could be
       argued either way, and every candidate is reported as a secondary result with its own test interval anyway.
     - Report each candidate's score with a storm-bootstrap 95% interval, for information only; it doesn't affect the
       choice. It shows how close the race was without reopening it.
@@ -73,9 +75,10 @@ This is Project 1 of 3, leading to benchmarking AI weather models (GraphCast, Pa
       the best model at each lead, so a new entrant changes everyone's score and can swap two others.
   - Secondary results, reported alongside without changing the primary choice: persistence, CLIPER and every candidate,
     each with its own test interval.
-  - Any XGBoost member (plain, residual, or inside consensus) is the average of 5 seeds' forecasts (seeds 42–46), both
-    when measured under cross-validation and in the final model, because single-seed results varied (consensus +72 h
-    ranged 2.1–2.4% across seeds). The settings come from the search on seed 42, which isn't rerun.
+  - Any XGBoost member (plain, residual, or inside either consensus) and any LSTM member (plain or inside consensus_lstm)
+    is the average of 5 seeds' forecasts (seeds 42–46), both when measured under cross-validation and in the final model,
+    because single-seed results varied (consensus +72 h ranged 2.1–2.4% across seeds). The settings come from the search
+    on seed 42, which isn't rerun.
   - Final models are refitted on all of 1980–2017 with the settings chosen by cross-validation.
   - Test day only runs code that was tested beforehand: `final_scoring.score_final_models`, rehearsed on the development
     seasons in notebook 04. A bug that first shows up on test can't be fixed without a second look, and a bad result
