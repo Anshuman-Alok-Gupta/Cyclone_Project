@@ -5,6 +5,7 @@ Every model and score in this project depends on this table. A small silent chan
 just wrong ones. So the expected counts are written down here and checked every run.
 """
 
+import numpy as np
 import pandas as pd
 
 from cyclone.features import distance_to_land_km
@@ -12,6 +13,7 @@ from cyclone.filters import FIRST_SEASON, LAST_SEASON, SYNOPTIC_HOURS, main_trac
 from cyclone.folds import FOLD_NAMES, NOT_IN_A_FOLD, add_fold, assign_fold, development
 from cyclone.samples import LEAD_HOURS, with_truth_at
 from cyclone.scoring import great_circle_km
+from cyclone.sequences import KEY_COLUMNS, MIN_STEPS, STEP_COLUMNS, Sequences
 from cyclone.splits import VAL_LAST_SEASON
 
 # Verified against IBTrACS v04r01 on 2026-11-04.
@@ -222,6 +224,60 @@ def check_folds(df: pd.DataFrame, init_times: pd.DataFrame, truth: pd.DataFrame)
     for number, name in enumerate(FOLD_NAMES):
         by_lead = ", ".join(f"+{lead_h} h {cases[lead_h][number]:,}" for lead_h in LEAD_HOURS)
         print(f"  {name}  {storms[number]:>3} storms, {starts[number]:>4} init times; cases {by_lead}")
+
+
+def check_sequences(
+    sequences: Sequences,
+    rows: pd.DataFrame,
+    df: pd.DataFrame,
+    truth: pd.DataFrame,
+) -> None:
+    """Raise an error explaining what differs if the LSTM's inputs aren't the agreed ones.
+
+    Models can only be compared on identical cases, so the sequences must belong to
+    exactly the start times every other model uses. ``check_folds`` then runs on the
+    sequences' own keys, so a forecast lost while building them changes the verified
+    counts and stops the run.
+
+    A sequence ends at t0. Its last fix must therefore be the row's own position, which
+    would fail if a sequence had been lined up with the wrong start time.
+
+    Args:
+        sequences: the result of ``sequences.build_sequences``.
+        rows: the table from ``cv.model_rows``.
+        df: the cleaned table.
+        truth: the table from ``samples.make_truth``.
+
+    Raises:
+        AssertionError: listing every difference.
+    """
+    keys = sequences.keys[KEY_COLUMNS].reset_index(drop=True)
+    mismatches = []
+    if not keys.equals(rows[KEY_COLUMNS].reset_index(drop=True)):
+        mismatches.append("the sequences aren't the same start times, in the same order, as rows")
+    else:
+        last = sequences.steps[np.arange(len(sequences)), sequences.lengths - 1]
+        lat, lon = (last[:, STEP_COLUMNS.index(column)] for column in ("lat", "lon"))
+        if not (np.array_equal(lat, rows["lat"]) and np.array_equal(lon, rows["lon"])):
+            mismatches.append("a sequence doesn't end at its start time's position")
+
+    longest = sequences.steps.shape[1]
+    if sequences.lengths.min() < MIN_STEPS or sequences.lengths.max() > longest:
+        mismatches.append(
+            f"lengths run {sequences.lengths.min()} to {sequences.lengths.max()}, "
+            f"outside {MIN_STEPS} to {longest}"
+        )
+
+    if mismatches:
+        lines = ["LSTM sequences do not match the other models' cases. Stop and resolve this."]
+        lines += ["Differences:"] + [f"  - {item}" for item in mismatches]
+        raise AssertionError("\n".join(lines))
+
+    check_folds(df, keys, truth)
+    print(
+        f"Sequences match: {len(sequences):,} start times, "
+        f"{sequences.lengths.min()} to {sequences.lengths.max()} steps."
+    )
 
 
 def check_dist_to_land(df: pd.DataFrame, raw: pd.DataFrame) -> None:
