@@ -3,7 +3,7 @@
 import pandas as pd
 import pytest
 
-from cyclone.consensus import CONSENSUS_NAME, consensus
+from cyclone.consensus import CONSENSUS_LSTM_NAME, CONSENSUS_NAME, consensus
 from cyclone.scoring import FORECAST_COLUMNS
 
 T0 = pd.Timestamp("2014-10-09 00:00")
@@ -12,6 +12,20 @@ BOTH = ("cliper", "xgboost")
 
 def make_forecasts(rows: list[tuple]) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=FORECAST_COLUMNS)
+
+
+def test_a_consensus_can_carry_its_own_name_and_any_number_of_members():
+    forecasts = make_forecasts(
+        [
+            ("cliper", "S1", T0, 24, 10.0, 80.0),
+            ("xgboost", "S1", T0, 24, 13.0, 83.0),
+            ("lstm", "S1", T0, 24, 16.0, 86.0),
+        ]
+    )
+    result = consensus(forecasts, ("cliper", "xgboost", "lstm"), CONSENSUS_LSTM_NAME)
+    assert result["model"].tolist() == [CONSENSUS_LSTM_NAME]
+    assert result["lat"].iloc[0] == pytest.approx(13.0)
+    assert result["lon"].iloc[0] == pytest.approx(83.0)
 
 
 def test_it_is_the_mean_latitude_and_mean_longitude_of_each_case():

@@ -402,3 +402,36 @@ def test_real_cases_from_with_truth_at_match_the_forecasts_scored(rows, truth):
         expected = len(with_truth_at(rows, truth, lead_h))
         at_lead = scored[scored["lead_h"] == lead_h]
         assert at_lead["error_km"].notna().sum() == expected
+
+
+def test_learning_error_is_scored_on_the_storms_a_model_learned_from(rows, truth):
+    seen = []
+
+    def perfect(learning, learning_truth, forecast_rows):
+        seen.append((learning, learning_truth, forecast_rows))
+        forecasts = []
+        for lead_h in LEAD_HOURS:
+            cases = with_truth_at(forecast_rows, learning_truth, lead_h)
+            forecasts.append(
+                pd.DataFrame(
+                    {
+                        "model": "perfect",
+                        "SID": cases["SID"],
+                        "init_time": cases["init_time"],
+                        "lead_h": lead_h,
+                        "lat": cases["truth_lat"],
+                        "lon": cases["truth_lon"],
+                    }
+                )
+            )
+        return pd.concat(forecasts, ignore_index=True)
+
+    errors = cv.learning_error(rows, truth, perfect)
+
+    assert errors.index.tolist() == list(LEAD_HOURS)
+    assert (errors == 0).all()
+    assert len(seen) == len(FOLD_NAMES)
+    for fold, (learning, learning_truth, forecast_rows) in zip(FOLD_NAMES, seen):
+        assert fold not in set(learning["fold"])
+        assert forecast_rows is learning
+        assert set(learning_truth["SID"]) == set(learning["SID"])

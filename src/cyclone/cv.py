@@ -109,6 +109,33 @@ def out_of_fold(rows: pd.DataFrame, truth: pd.DataFrame, forecaster: Forecaster)
     return pd.concat(forecasts, ignore_index=True)
 
 
+def learning_error(rows: pd.DataFrame, truth: pd.DataFrame, forecaster: Forecaster) -> pd.Series:
+    """Return a model's mean error on the storms it learned from, by lead time.
+
+    The gap between this and the out-of-fold error shows how far a model has memorized its
+    training storms rather than learning something that carries over. Each fold's model
+    forecasts its own learning rows, which is the only time a model is scored on storms
+    it has seen. This is a check on fitting, never a measure of how good a model is.
+
+    Args:
+        rows: the table from ``model_rows``.
+        truth: the table from ``samples.make_truth``.
+        forecaster: the same function that was passed to ``out_of_fold``.
+
+    Returns:
+        Mean error in km, one row per lead time, over every fold's learning rows.
+    """
+    rows = development(rows)
+
+    errors = []
+    for fold in FOLD_NAMES:
+        learning = rows[rows["fold"] != fold]
+        learning_truth = truth[truth["SID"].isin(learning["SID"])]
+        forecasts = forecaster(learning, learning_truth, learning)
+        errors.append(score(forecasts, learning_truth, report=False))
+    return pd.concat(errors).groupby("lead_h")["error_km"].mean()
+
+
 def with_relative_error(table: pd.DataFrame) -> pd.DataFrame:
     """Add each combination's error relative to the best at each lead, averaged over leads.
 
