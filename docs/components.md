@@ -24,6 +24,12 @@ Model choice runs each model through cross-validation, and is scored the same wa
 folds → checks.check_folds → cv.model_rows → cv.out_of_fold → scoring.score → cv.bootstrap_skill → cv.selection_scores
 ```
 
+The LSTM builds its own input, and takes the same route through cross-validation:
+
+```
+sequences.build_sequences → checks.check_sequences → lstm_model.search_cv → cv.out_of_fold → scoring.score
+```
+
 The final models are then refitted and saved, and scored once at the end of Project 1:
 
 ```
@@ -36,7 +42,7 @@ The project decisions behind these modules are in `CLAUDE.md`.
 
 **What it does:** the one place that says where data lives.
 
-**Inputs and outputs:** reads the `CYCLONE_DATA_DIR` environment variable. `data_dir()`, `ibtracs_path(basin)`, `ni_clean_path()`, `xgboost_dir()` and `xgboost_final_dir()` return paths.
+**Inputs and outputs:** reads the `CYCLONE_DATA_DIR` environment variable. `data_dir()`, `ibtracs_path(basin)`, `ni_clean_path()`, `xgboost_dir()`, `xgboost_final_dir()` and `lstm_dir()` return paths.
 
 **Why it's built this way:**
 - Changing one variable moves all the data between your laptop and Colab, with no code changes.
@@ -131,6 +137,7 @@ The project decisions behind these modules are in `CLAUDE.md`.
 - `check_samples(init_times, truth)` does the same for the start times and for the cases with truth at each lead time.
 - `count_cases(init_times, truth)` returns those case counts as `{split: {lead_h: count}}`.
 - `check_folds(df, init_times, truth)` does the same for the cross-validation blocks. It also stops the run if a storm is in two blocks or a test season is in any block.
+- `check_sequences(sequences, rows, df, truth)` stops the run unless the LSTM's inputs are the same start times as `rows`, in the same order, each ending at its own position. It then runs `check_folds` on the sequences' own keys, so a forecast lost while building them changes the verified counts.
 - `check_dist_to_land(df, raw)` compares `features.distance_to_land_km` with IBTrACS `DIST2LAND` and prints the agreement. It stops the run only if the median gap passes 10 km, which would mean a broken calculation.
 
 **Why it's built this way:**
@@ -283,21 +290,58 @@ Mean error on the validation split, on identical cases:
 - Its partner test moves one past fix and requires the features to change, because inputs that ignored the track entirely would pass the leakage test too.
 - On the real data, corrupting every fix after each storm's midpoint left all 2,031 start times up to the midpoint unchanged, across 242 storms, while all 2,647 later ones changed.
 
-**Reused by:** the LSTM can read the same inputs, under the same leakage test. WP pretraining can use it unchanged, since the land data is global.
+**Reused by:** `sequences.py` takes the LSTM's day of year and distance to land from here. WP pretraining can use it unchanged, since the land data is global.
+
+## sequences.py
+
+**What it does:** turns each start time into what an LSTM reads: the storm's track, one fix at a time, plus the inputs that don't change along it.
+
+**Inputs and outputs:**
+- `build_sequences(rows, df, history_h=72)` takes the start times and the cleaned table, and returns a `Sequences`: `keys`, `steps`, `lengths` and `fixed`, in the same order as `rows`.
+- `select(sequences, rows)` returns the sequences for some rows, matched by storm and start time.
+- `fit_scaler(sequences)` returns each input's mean and spread, and `scale(sequences, scaler)` returns scaled inputs with every blank filled.
+
+| Inputs | Per | What it tells the model |
+|---|---|---|
+| `dlat`, `dlon` | step | The 6 h change, which is the motion the LSTM builds its own summary from |
+| `lat`, `lon` | step | Where the storm was |
+| `wind` | step | How strong it was |
+| `wind_missing` | step | Whether that wind is real or a fill |
+| `day_sin`, `day_cos` | forecast | Time of year, taken from `features.py` |
+| `dist_to_land_km` | forecast | How close the coast is at t0, taken from `features.py` |
+
+**Why it's built this way:**
+- A sequence is built for each row it's given, so the LSTM has exactly the other models' start times. `check_sequences` proves it: 3,745 start times, and 2,953, 2,209 and 1,580 cases.
+- Fixes are matched by timestamp, walking back 6 h at a time for up to 72 h, so at most 13 fixes. The walk stops at a gap, so the sequence starts after it. Every start time has 24 h of history, so none is shorter than 5.
+- This file reads only fixes at t0 or earlier, and never sees the truth table. Targets belong to the model.
+- An LSTM can't take a blank as XGBoost can: it multiplies every input by a weight, and one blank turns everything after it blank. A missing wind is filled with the average, and a 0/1 flag says so at each step. The fill keeps the arithmetic working, and the flag stops an invented wind passing for a real one.
+- The first step's change is blank even when an earlier fix exists, and needs no flag because it's always the first step. If it held that change, a 24 h limit wouldn't be a limit: it would read the fix from 30 h ago.
+- Scaling matters because the network starts with small random weights and adjusts them all at the same rate, so large inputs would swamp small ones.
+- Scaling is fitted on the rows it's given, so a fold gives it the learning rows only. A mean and spread are learned from data as a weight is, so fitting them on all rows would let the held-out block shape how every input is read, and test day would need the same leak.
+- Filling comes after scaling, with 0, which by then is the learning rows' average. So held-out storms can't reach the fill either.
+- `wind_missing` isn't scaled, because 0 and 1 mean something exact.
+
+**Tests:** `tests/test_sequences.py`.
+- Moving every fix after t0 leaves the sequences unchanged, and its partner test requires a fix before t0 to change them.
+- A gap starts a new sequence, and nothing from before it is read.
+- A scaler isn't changed by rows it wasn't fitted on. `tests/test_lstm_model.py` watches it in every fold.
+- Seven deliberate mistakes were tried and all failed the tests, including ignoring gaps, reading a fix after t0, and dropping the flag.
+
+**Reused by:** the LSTM, and any later sequence model. WP pretraining can use it unchanged.
 
 ## xgb_model.py
 
 **What it does:** fits XGBoost, picks its settings, forecasts, and saves and reloads the models. It has two routes: cross-validation, which is how models are chosen now, and the older train and validation route, which notebook 03 still uses.
 
 **Inputs and outputs:**
-- `search_cv(rows, truth, make_forecaster)` tries 20 combinations under cross-validation, and returns a table of them, best first.
+- `search_cv(rows, truth, make_forecaster)` tries 20 combinations under cross-validation through `cv.search_settings`, and returns a table of them, best first.
 - `fit_fixed(rows, truth, settings, device, base=None)` fits the six models on exactly the rows given, keeping every tree. With `base`, the target is the truth minus that forecast.
 - `fit_seeds(rows, truth, settings, device, base=None, seeds=SEEDS)` fits one set of six models per seed, and `predict_seeds(fitted, features, name, base=None)` returns the average of their forecasts.
 - `xgboost_forecaster(settings, device, seeds)` and `residual_forecaster(settings, device, seeds)` return the two models in the form `cv.out_of_fold` takes. One seed is the default, for the search. Pass `SEEDS` to measure a model.
 - `fit_final(rows, truth, settings, device, base=None)` refits chosen settings on all of 1980–2017, once per seed. `save_final` and `load_final` write and read one folder per seed, and a missing seed stops the load.
 - `predict_xgboost(models, features, name, base=None)` returns forecasts in the format `scoring.score` takes.
 - `search(features, truth)` and `fit_models(features, truth, settings, device)` are the older route, for notebook 03.
-- `save_models(models, search_table, directory)` and `load_models(directory)` write and read a folder of models, which is git-ignored. `data/models/xgboost` is rebuilt by notebook 03, and `data/models/xgboost_final` by notebook 04.
+- `save_models(models, search_table, directory)` and `load_models(directory)` write and read a folder of models, which is git-ignored. `data/models/xgboost` is rebuilt by notebook 03, and `data/models/xgboost_final` by notebook 05.
 - `pick_device()`, `sample_settings()`, `sample_cv_settings()`, `best_settings(search_table)`, `tree_counts(models)` and `gain_shares(models)` are the supporting pieces. `tree_counts` and `gain_shares` need early stopping, so they only work on the older route.
 
 **Why it's built this way:**
@@ -369,15 +413,128 @@ Mean error on the validation split, on identical cases, with the winning setting
 - The choice of land mask makes almost no difference, even though it changes the distance for 1,613 of the 4,678 start times.
 - Distance to land itself adds nothing measurable on validation. It stays because it was asked for, and it may matter more for intensity than for track.
 
-**Reused by:** notebooks 03 and 04. The LSTM has to go through the same cross-validation, on the same cases.
+**Reused by:** notebooks 03, 04 and 05.
 
 The search winners were `max_depth` 3, `learning_rate` 0.02, `subsample` 0.6 for both, with `min_child_weight` 5 and 200 trees for XGBoost, and 10 and 100 trees for `xgb_residual`. Both sit at the low edge of the learning rate and subsample ranges. The top combinations are very close.
+
+## lstm_model.py
+
+**What it does:** fits the LSTM, picks its settings, forecasts, and saves and reloads it.
+
+**Inputs and outputs:**
+- `search_cv(rows, truth, sequences, device, checkpoint, resume)` tries 12 combinations under cross-validation, and returns a table of them, best first.
+- `fit_lstm(rows, truth, sequences, settings, device, seed)` fits one network on exactly the rows given, and returns a `FittedLSTM` holding its weights and scalers.
+- `fit_seeds(...)` fits one network per seed, saving each as it goes, and `predict_seeds(fitted, rows, sequences, name)` returns the average of their forecasts.
+- `lstm_forecaster(settings, device, sequences, seeds, name, directory, resume)` returns the model in the form `cv.out_of_fold` takes. One seed is the default, for the search. Pass `SEEDS` to measure a model.
+- `fit_final(...)`, `save_final(...)` and `load_final(directory)` refit chosen settings on all of 1980–2017, and write and read one file per seed. A missing seed stops the load.
+- `predict_lstm(fitted, rows, sequences, name)`, `save_fitted`, `load_fitted`, `masked_loss`, `inner_storms`, `pick_device()`, `sample_settings()` and `best_settings(search_table)` are the supporting pieces.
+
+**Why it's built this way:**
+- An LSTM reads a sequence one fix at a time and carries a small memory forward, deciding at each fix what to keep, forget and add. So nobody chooses its summaries in advance, and it can look further back.
+- The fixed inputs join after the LSTM, because they don't change along a sequence. Feeding them in at every step would only repeat them.
+- One head predicts dlat and dlon at all three leads from one summary, where XGBoost fits six separate models. It did give smoother tracks: the +48 h point sits a mean 51 km from the midpoint of +24 and +72 h, against 76 km for XGBoost and 51 km for CLIPER, which is a straight line in each input. It's a one-off measure, and smoother isn't the same as closer.
+- It predicts the change in position, as `CLAUDE.md` requires. Targets are scaled per lead and component on the learning rows. Otherwise +72 h's moves, three times as large, would have nine times the squared error and drown out the other leads.
+- Sequences are padded to one length, and the answer is read at each sequence's real last step. An LSTM only reads forward, so the padding after that step can't change it. A test sets the padding to 999.
+- Some cases have truth at +24 h but not +72 h. `masked_loss` multiplies each error by 1 or 0, so a missing lead's error is exactly 0 and pulls on no weight, while that case's real answers still teach. Each lead is averaged by itself and they count equally, as they do in the rule that picks the primary model.
+- Stopping can't watch the held-out block, because that block's answers would then shape its own forecasts. About 15% of the learning storms (23 or 24, depending on the fold) are set aside and chosen whole, since rows from one storm are nearly identical. This is allowed because their answers already belong to the fold. XGBoost didn't do this, because each fold and model would end with a different tree count and no single setting to refit with. Here what carries over is the rule, not a number of epochs. It does cost those storms as training data, and every LSTM number includes that cost.
+- The inner seed stays the same for all five model seeds, so the members differ only in starting weights, shuffling and dropout.
+- Settings are a balanced draw. Twelve fully random draws gave hidden size 16 eight times and 32 once, so each value of each setting is used equally often, in random pairings. That was seen in the list of settings, before any combination was fitted.
+- `AdamW` applies weight decay in proportion to the learning rate, which is why the values look large. Gradients are capped at a size of 1, because one unusual batch can make an LSTM's nudge huge.
+- Dropout sits before the head as well as between layers, because the LSTM's own dropout means nothing with one layer.
+- The scalers are saved with the weights, so test day can't refit them on test storms.
+- Networks are saved as they're fitted, and a dropped session loses one fit at most. Reuse has to be asked for, and a saved network with other settings isn't reused. Files read back with PyTorch's safe loader, and are replaced in one step, so a closed laptop can't leave half a file.
+- Seeds, deterministic settings and a GPU tiny-LSTM check are all in the file, but the GPU path hasn't been run, since no GPU here can use it. On this CPU, refitting gave forecasts identical to the saved network's. A GPU can give slightly different models.
+- Forecasting always runs on the CPU, so a saved network gives the same forecasts anywhere.
+- The search took 9 minutes on this laptop's CPU, and the 5-seed run about 3.
+
+**Tests:** `tests/test_lstm_model.py`.
+- Moving one block's truth leaves that block's forecasts identical, for each of the five blocks, and its partner test requires the other blocks to change.
+- The scaler is watched in every fold, and corrupting held-out inputs leaves that fold's model unchanged.
+- Inner storms are watched and never trained on, and a stopped network holds its best epoch's weights rather than its last.
+- Ten deliberate mistakes were tried and all failed the tests, including keeping the last epoch's weights, fitting the scaler on every row, reading the answer from the padding, and training on the inner storms.
+
+**Results.** Out-of-fold scores from notebook 05, on the same cases as the table under `cv.py`, with hidden size 64, 1 layer, dropout 0.2, learning rate 0.003 and weight decay 0.1. All six one-layer combinations beat all six with two.
+
+| Model | Mean km +24 h | +48 h | +72 h | Median km +24 h | +48 h | +72 h |
+|---|---:|---:|---:|---:|---:|---:|
+| CLIPER | 145.3 | 327.3 | 497.9 | 127.6 | 298.6 | 445.4 |
+| XGBoost | 136.5 | 316.5 | 494.2 | 120.1 | 284.2 | 447.5 |
+| Consensus | 138.2 | 316.3 | 486.0 | 121.6 | 283.5 | 435.2 |
+| LSTM | 142.5 | 322.7 | 501.5 | 128.6 | 297.1 | 461.1 |
+| `consensus_lstm` | 137.5 | 314.7 | 486.5 | 123.2 | 285.6 | 436.6 |
+
+| Skill vs CLIPER (95% interval) | +24 h | +48 h | +72 h |
+|---|---:|---:|---:|
+| LSTM | 2.0% (−0.2 to 4.1) | 1.4% (−1.2 to 4.0) | −0.7% (−4.7 to 3.0) |
+| `consensus_lstm` | 5.4% (4.3 to 6.4) | 3.8% (2.5 to 5.1) | 2.3% (0.0 to 4.4) |
+
+| Win rate vs CLIPER, by case | +24 h | +48 h | +72 h |
+|---|---:|---:|---:|
+| LSTM | 51.6% | 51.7% | 50.4% |
+| `consensus_lstm` | 61.4% | 59.5% | 55.7% |
+
+**The score that picks the primary model.** The interval is for information only.
+
+| Candidate | Score (95% interval) | Nested |
+|---|---:|---:|
+| `consensus_lstm` | 3.84 (2.55 to 5.12) | 3.44 |
+| Consensus | 3.56 (2.48 to 4.62) | 3.50 |
+| XGBoost | 3.38 (0.96 to 5.62) | 3.18 |
+| `xgb_residual` | 1.66 (0.06 to 3.09) | not rerun |
+| LSTM | 0.89 (−1.69 to 3.33) | −0.67 |
+
+- **`consensus_lstm` is the primary model today, under the rule.** The rule uses the plain score, and that isn't reopened.
+- **The lead should be read as a tie.** Directly against consensus it's 0.29 ahead (−0.34 to 0.91), and it's 0.5% ahead at +24 and +48 h and level at +72 h, with every interval crossing zero.
+- **The LSTM alone doesn't beat XGBoost.** It's behind at +24 h by 4.4% (−6.5 to −2.5), and level within the uncertainty beyond that.
+- It's the least steady model by block: from +7.4% in 1980–87 to −8.7% in 1996–2003 at +72 h. `consensus_lstm` is ahead of CLIPER at every lead in all five blocks, though by only 0.2 and 0.7% at +72 h in two of them.
+
+**Where any gain comes from.** The same network, settings and seeds, given only the last 24 h. It's a check, not a candidate, and had no search of its own.
+
+| Skill vs CLIPER | +24 h | +48 h | +72 h | Score |
+|---|---:|---:|---:|---:|
+| LSTM, 72 h of history | 2.0% | 1.4% | −0.7% | 0.89 |
+| LSTM, 24 h of history | 3.7% | 3.5% | 1.8% | 2.99 |
+| XGBoost, 24 h of history | 6.1% | 3.3% | 0.7% | 3.38 |
+
+- **The longer history hurt.** Against the 24 h network, the 72 h one is 1.8, 2.1 and 2.6% worse, with intervals that clear zero at every lead (−2.7 to −0.9, −3.1 to −1.1 and −4.0 to −1.2).
+- **The model itself isn't better either.** On the same history it's behind XGBoost at +24 h and level beyond that.
+- Why longer sequences hurt isn't established. The clue below fits older positions saying little about where a storm goes next, but it isn't proof.
+
+| Mean km, learned storms → held-out storms | +24 h | +48 h | +72 h |
+|---|---:|---:|---:|
+| CLIPER | 142.5 → 145.3 | 315.3 → 327.3 | 474.0 → 497.9 |
+| XGBoost | 118.5 → 136.5 | 247.3 → 316.5 | 345.5 → 494.2 |
+| LSTM, 72 h | 127.8 → 142.5 | 272.5 → 322.7 | 407.6 → 501.5 |
+| LSTM, 24 h | 126.3 → 139.9 | 273.2 → 315.9 | 411.5 → 489.0 |
+
+- **It hasn't memorized its storms more than XGBoost has.** At +72 h, held-out error is 43% above learned error for XGBoost, 23% for the LSTM and 5% for CLIPER. The learned figures for the LSTM include the 15% of storms it only watched, so the true gap is a little larger.
+- The 72 h and 24 h networks fit their learned storms equally well, but the 72 h one does worse on new storms. So the extra fixes didn't even help it fit.
+- Training stops very early: the best epoch is 2 to 11, at most a few hundred nudges, and it's decided by 23 or 24 storms. That's a likely reason seeds differ so much, though it wasn't tested separately.
+
+**How far to trust that.** One-off tests, on the development seasons only:
+
+| Score under the rule | `consensus_lstm` | Consensus | XGBoost | LSTM |
+|---|---:|---:|---:|---:|
+| As reported, seeds 42 to 46 | 3.84 | 3.56 | 3.38 | 0.89 |
+| A second set of five LSTM seeds, 47 to 51 | 4.10 | 3.56 | 3.38 | 1.09 |
+| Each LSTM seed alone, 42 to 46 | 3.71, 3.80, 3.36, 3.21, 3.77 | 3.56 | 3.38 | −0.81, −0.73, −1.77, −2.81, 0.05 |
+| Nested | 3.44 | 3.50 | 3.18 | −0.67 |
+
+- **Seeds matter far more than for XGBoost.** Averaging five adds about 2 points to the LSTM, and added 0.07 to XGBoost. Four of the five seeds score below zero on their own.
+- **`consensus_lstm`'s lead depends on averaging seeds.** With one LSTM seed it loses to consensus on seeds 44 and 45. Averaging five, it wins, and seeds 47 to 51 widen the lead.
+- **The lead doesn't survive nesting.** Each block's settings for XGBoost and the LSTM were chosen by a 4-fold cross-validation over the other four blocks, on one seed, then measured with five, and both consensus models were rebuilt from those members. The gap is −0.07 (−0.88 to 0.73), so the two are level. XGBoost and consensus match notebook 04's nested scores, and each lead's `consensus_lstm` skill is 5.3, 3.4 and 1.7%. The nesting cost consensus 0.06 and `consensus_lstm` 0.40, so most of its lead came from choosing the LSTM's settings on these storms.
+- The nested picks show why. The LSTM chose three different combinations across the blocks (all with one layer), while XGBoost always chose depth 3 and two combinations. The search can tell one layer from two, but the top few are 0.1 to 1% apart on one seed, inside the seed-to-seed swing.
+- On the real data with one seed, refitting gave forecasts identical to the saved networks'. Moving every truth position in the 1996–2003 block left that block's forecasts identical while every other forecast moved. The tests cover all five blocks, on made-up storms. Corrupting every test row and rebuilding left every forecast identical.
+- Shuffling the answers sent the error past 1,200 km at every lead, so the skill comes from real signal and not from a bug.
+- An LSTM's mistakes are nearly as alike as the others'. Latitude errors correlate 0.94 to 0.95 with XGBoost's, 0.92 to 0.94 with CLIPER's, and CLIPER's with XGBoost's 0.92 to 0.93. That leaves averaging little to cancel.
+
+**Reused by:** notebook 05. These are the numbers the West Pacific pretraining step has to beat, on the same cases.
 
 ## consensus.py
 
 **What it does:** averages the forecast positions of several models into one forecast.
 
-**Inputs and outputs:** `consensus(forecasts, members)` takes forecasts in the scoring format and the names of the models to average. It returns one forecast per case, named `consensus`, and keeps extra columns such as `fold`.
+**Inputs and outputs:** `consensus(forecasts, members, name)` takes forecasts in the scoring format, the names of the models to average, and a name for the result, `consensus` by default. It returns one forecast per case, and keeps extra columns such as `fold`.
 
 **Why it's built this way:**
 - Two forecasts that are wrong in different ways can partly cancel out. If one is too far north and the other too far south, the point between them is closer than either. Real forecast centres lean on this heavily.
@@ -389,22 +546,24 @@ The search winners were `max_depth` 3, `learning_rate` 0.02, `subsample` 0.6 for
 
 **Tests:** `tests/test_consensus.py`.
 
-**Reused by:** notebook 04, and Project 3 can use it to average AI models.
+**Reused by:** notebooks 04 and 05, where `consensus_lstm` averages CLIPER, XGBoost and the LSTM. Project 3 can use it to average AI models.
 
 ## final_model.py
 
-**What it does:** builds the final models, all refitted on 1980–2017, ready for the test split: CLIPER, 5-seed XGBoost and 5-seed `xgb_residual`. It scores nothing.
+**What it does:** builds the final models, all refitted on 1980–2017, ready for the test split: CLIPER, and 5 seeds each of XGBoost, `xgb_residual` and the LSTM. It scores nothing.
 
 **Inputs and outputs:**
-- `fit_final_models(rows, truth, xgboost_settings, residual_settings, device)` returns a `FinalModels` holding the three fitted models.
-- `final_forecasts(final, rows)` returns forecasts from all five models, in the format `scoring.score` takes. Persistence has nothing to fit, and consensus is worked out from the forecasts.
-- `save_final_models(final, xgboost_search, residual_search, directory)` and `load_final_models(directory)` write and read everything in `data/models/xgboost_final`: `cliper.pkl`, XGBoost's `seed42` to `seed46` folders, and the same five for `xgb_residual` in `residual/`.
+- `fit_final_models(rows, truth, sequences, xgboost_settings, residual_settings, lstm_settings, device, lstm_device, lstm_checkpoints, resume)` returns a `FinalModels` holding the four fitted models.
+- `final_forecasts(final, rows, sequences)` returns forecasts from all seven models, in the format `scoring.score` takes. Persistence has nothing to fit, and both consensus models are worked out from the forecasts.
+- `save_final_models(final, xgboost_search, residual_search, lstm_search, directory)` and `load_final_models(directory)` write and read everything in `data/models/xgboost_final`: `cliper.pkl`, XGBoost's `seed42` to `seed46` folders, the same five for `xgb_residual` in `residual/`, and the LSTM's five files in `lstm/`.
 
 **Why it's built this way:**
-- It has its own file because the final models depend on each other. Consensus averages CLIPER and XGBoost, and `xgb_residual` corrects CLIPER, while `consensus.py` knows nothing about any model.
+- It has its own file because the final models depend on each other. Consensus averages CLIPER and XGBoost, `consensus_lstm` adds the LSTM to those, and `xgb_residual` corrects CLIPER, while `consensus.py` knows nothing about any model.
 - Cross-validation's models each saw four blocks, and their job was to measure a model. Using all five blocks gives the final one more storms to learn from.
 - One CLIPER is shared, so `xgb_residual` corrects the same CLIPER that sits beside it at test time. Its target uses CLIPER's forecasts on storms CLIPER was fitted on, as it did in each fold.
-- The final models can't be scored on 1980–2017, since they've seen those storms, so the cross-validated scores stand in for them until the test split. That only works if they're the same models, so two tests check that the final XGBoost and `xgb_residual` give exactly what the measured forecaster gives when handed every block.
+- The final models can't be scored on 1980–2017, since they've seen those storms, so the cross-validated scores stand in for them until the test split. That only works if they're the same models, so tests check that the final XGBoost, `xgb_residual` and LSTM each give exactly what the measured forecaster gives when handed every block.
+- The final LSTM stops early on about 15% of the development storms, by the same rule as in each fold, so no test storm is involved. Its scalers are saved with it.
+- Notebook 05 fits these, because notebook 04 doesn't have the LSTM's settings. Refitting left XGBoost's and `xgb_residual`'s forecasts identical to the models saved before.
 - The filter is at the top of `fit_final_models`, so passing the full table can't reach test. In the tests, corrupting every made-up storm after 2017 left the forecasts identical.
 - CLIPER is saved as well as XGBoost, although it refits in moments, so test day uses exactly the models fitted here.
 - CLIPER is pickled, which is the simple way to keep a scikit-learn model. Pickle runs code as it loads, so only read a file you wrote.
@@ -419,18 +578,18 @@ The search winners were `max_depth` 3, `learning_rate` 0.02, `subsample` 0.6 for
 
 **Inputs and outputs:**
 - `rows_for_seasons(df, seasons)` returns one table with everything any model reads, for any seasons, with a `fold` column. Seasons outside the blocks are labelled `none`.
-- `score_final_models(df, seasons, directory, confirm_test=False)` loads the saved final models, forecasts those seasons and returns the table from `scoring.score`, ready for `scoring.summarize` and `cv.bootstrap_skill`.
+- `score_final_models(df, seasons, directory, confirm_test=False)` loads the saved final models, builds the LSTM's sequences for those seasons, forecasts them and returns the table from `scoring.score`, ready for `scoring.summarize` and `cv.bootstrap_skill`.
 - `check_seasons(seasons, confirm_test)` is the guard, and `TEST_SEASONS` holds 2018–2024.
 
 **Why it's built this way:**
 - **Test day should only run code that was tested beforehand.** Test is scored once. A bug that first shows up on test has no good way out: once results have been seen, fixing the code and scoring again is a second look at the exam, and leaving the bug in means reporting a wrong number. Worse, the wish to go looking for a bug depends on whether the number was welcome, so a disappointing result gets checked and a pleasing one doesn't. Rehearsing on the development seasons finds those bugs while finding them costs nothing.
-- The rehearsal's scores mean nothing, because the final models have seen those storms. So notebook 04 prints counts rather than errors, and checks that the rows and cases match cross-validation's.
+- The rehearsal's scores mean nothing, because the final models have seen those storms. So notebook 05 prints counts rather than errors, and checks that the rows and cases match cross-validation's, for all seven models.
 - `rows_for_seasons` uses `make_init_times`, `build_features` and the same join as `cv.model_rows`, so a model reads test rows built exactly as its measured rows were. On the real development seasons, the two tables are identical.
 - `TEST_SEASONS` comes from the boundaries in `splits.py`, so the guard can't drift from them.
 - The guard runs before anything is read, so a refusal can't depend on looking at the data. A test passes no table at all to prove it.
 - One test season among others is refused, since that would still be a look at it.
 - Only `True` itself confirms, and `confirm_test` has to be named in the call. So a stray `1`, `"yes"` or extra positional value can't use up the one look.
-- The saved models are loaded, not fitted, so nothing about the seasons being scored can reach them. A test stops the run if anything tries to fit.
+- The saved models are loaded, not fitted, so nothing about the seasons being scored can reach them. A test stops the run if anything tries to fit, including a network or a scaler.
 - Seasons that aren't in the cleaned table are refused. That includes 2025 onward, which cleaning removes as provisional.
 - The scoring function is never called on a test season, even a made-up one. The guard is tested alone, so its "yes" path is proved without scoring. The rows function does run on the made-up storms after 2017, so a real test season isn't the first to reach the `none` label.
 
@@ -451,6 +610,8 @@ The search winners were `max_depth` 3, `learning_rate` 0.02, `subsample` 0.6 for
 - `win_rate(scored)` returns the percentage of cases where each model is closer than CLIPER.
 - `selection_scores(scored, candidates)` returns the score that picks the primary model, with a 95% interval, best first.
 - `storm_gaps(scored, model)` returns each storm's mean error for a model minus CLIPER's, sorted.
+- `search_settings(rows, truth, make_forecaster, combinations, checkpoint, resume)` tries each combination of a model's settings and ranks them, best first, using `with_relative_error(table)`. XGBoost and the LSTM both use it, so they share one rule.
+- `learning_error(rows, truth, forecaster)` returns a model's mean error on the storms it learned from, by lead time, to compare with its out-of-fold error.
 
 **Why it's built this way:**
 - A single validation split rests on whichever storms fell into it. Here every development storm is forecast once, so a comparison rests on all of them.
@@ -464,6 +625,8 @@ The search winners were `max_depth` 3, `learning_rate` 0.02, `subsample` 0.6 for
 - Each lead time redraws from the storms with a case at that lead, and every model is scored on the same redraws. So the interval measures the gap between models, not how hard the storms were.
 - The interval covers only the luck of which storms occurred. It doesn't cover the choice of settings, or storms in one season being alike.
 - Skill per block and win rate each catch something an average hides: a model that wins on the strength of one block, or through a few large wins.
+- `learning_error` is the only place a model is scored on storms it has seen. It's a check on fitting, never a measure of how good a model is. It works for any forecaster, so models can be compared.
+- `search_settings` replaces the checkpoint file in one step, so a laptop closing mid-write can't leave half a file.
 
 **Tests:** `tests/test_cv.py`.
 - The leakage test moves every truth position in one block, reruns, and requires that block's forecasts to be identical, for each of the five blocks.
@@ -501,7 +664,7 @@ The search winners were `max_depth` 3, `learning_rate` 0.02, `subsample` 0.6 for
 | XGBoost | 3.38 (0.96 to 5.62) | 3.31 (0.92 to 5.54) |
 | `xgb_residual` | 1.66 (0.06 to 3.09) | 1.63 (0.02 to 3.08) |
 
-- **Consensus is the primary model today.** The gap of 0.18 is much smaller than either interval, and the rule picks the higher score anyway. XGBoost is slightly better at +24 h (1.2%, interval 0.3 to 2.2), they're level at +48 h, and consensus leads at +72 h with an interval that crosses zero (1.6%, −0.5 to 3.9).
+- **Consensus was the primary model at this point.** The LSTM results under `lstm_model.py` add `consensus_lstm`, which now leads under the rule. The gap of 0.18 is much smaller than either interval, and the rule picks the higher score anyway. XGBoost is slightly better at +24 h (1.2%, interval 0.3 to 2.2), they're level at +48 h, and consensus leads at +72 h with an interval that crosses zero (1.6%, −0.5 to 3.9).
 - **No model clearly beats CLIPER at +72 h.** Consensus is 12 km ahead, but its interval only just clears zero, and storm by storm it's 71 to 69. Its average win is 57 km against an average loss of 35 km.
 - At +24 h, XGBoost and consensus clearly beat CLIPER, in all five blocks. At +48 h, consensus does.
 - CLIPER's error here is 145, 327 and 498 km, against 129, 289 and 459 km on the 2013–17 storms in notebook 03. Those validation storms were easy, and XGBoost's 8.0% at +72 h there has fallen to 0.7%.
@@ -547,7 +710,7 @@ The search winners were `max_depth` 3, `learning_rate` 0.02, `subsample` 0.6 for
 - A 95% interval is fair for one number chosen in advance. Reading the best of three models at three leads is nine looks, and this table allows for that (a Bonferroni correction).
 - On the real data with one seed, moving every truth position in one block left that block's forecasts identical for CLIPER, XGBoost and `xgb_residual`, while every forecast in the other blocks moved. Corrupting every test row and rebuilding left all forecasts identical.
 
-**Reused by:** every model comparison from here on, including the LSTM. These are the numbers it has to beat, on the same cases.
+**Reused by:** every model comparison from here on. These numbers are carried forward under `lstm_model.py`, on the same cases.
 
 ## plotting.py
 
@@ -574,6 +737,7 @@ The search winners were `max_depth` 3, `learning_rate` 0.02, `subsample` 0.6 for
 - Importance bars are one colour, XGBoost's, because they're one model's numbers. Colouring them by size would only repeat what their length shows.
 - Only bars of 5% or more are labelled. A number on every bar would hide the few that matter, and the notebook's table has the rest.
 - The storm chart's bars are sorted, so it shows whether a lead comes from most storms or a few big ones. They're blue or red for which side of zero they fall on, not in model colours, because yellow and pink fail the palette check beside CLIPER's orange. A pair of opposites also reads as "better" and "worse" for any model.
+- The LSTM models skip the palette's next slot, green. On the forecast maps it would sit beside CLIPER's orange, and the two are nearly the same for red-weak vision (ΔE 3.2, against a floor of 6). CLIPER, XGBoost, LSTM and `consensus_lstm` pass on every pair, so they're safe together on one map.
 - Five model colours pass the check for lines and bars side by side, but not for every pair at once. So they're safe for a chart like the error-by-lead lines, with labels, and shouldn't all share a scatter plot.
 
 **Reused by:** `plot_forecasts` and `plot_error_by_lead` work for any model in the scoring format, including the AI-model tracks in Project 3.

@@ -49,7 +49,8 @@ This is Project 1 of 3, leading to benchmarking AI weather models (GraphCast, Pa
   - Why: a single validation split of 27 storms was too few. On storms held back from the choice, XGBoost's lead over
     CLIPER at +48 h fell from 4.7% to 0%. Evidence is in `docs/components.md`.
   - No early stopping on a held-out block: searching the number of trees replaces it, since a block that chooses
-    its own stopping point leaks into its own forecasts.
+    its own stopping point leaks into its own forecasts. The LSTM stops on about 15% of the learning storms instead,
+    chosen whole, because those answers already belong to the fold.
   - Report skill against CLIPER with a 95% interval from a bootstrap of whole storms, not rows.
 - **The old train/val split stays only so notebooks 02–03 still run:** train up to and including 2012, validate 2013–2017.
   Don't use it to choose or compare models.
@@ -84,8 +85,10 @@ This is Project 1 of 3, leading to benchmarking AI weather models (GraphCast, Pa
     seasons in notebook 05. A bug that first shows up on test can't be fixed without a second look, and a bad result
     gets checked for bugs while a good one doesn't. It refuses 2018–2024 unless called with `confirm_test=True`, which
     is passed only for that one run.
-  - Current leader (2026-11-04), 5-seed scores with 95% intervals: consensus of CLIPER and XGBoost 3.56% (2.48 to 4.62),
-    XGBoost 3.38% (0.96 to 5.62), `xgb_residual` 1.66% (0.06 to 3.09).
+  - Current leader (2026-11-05), 5-seed scores with 95% intervals: `consensus_lstm` 3.84% (2.55 to 5.12), consensus of
+    CLIPER and XGBoost 3.56% (2.48 to 4.62), XGBoost 3.38% (0.96 to 5.62), `xgb_residual` 1.66% (0.06 to 3.09),
+    `lstm` 0.89% (−1.69 to 3.33). The rule decides on these scores, but this lead isn't firm: with settings chosen by
+    nested cross-validation the two consensus models are level, 3.44 against 3.50. Evidence is in `docs/components.md`.
 - Scoring harness: great-circle error in km. It must be a standalone module that accepts any table of forecast positions, so it can score AI-model output in Project 3.
 
 ## Model input rules
