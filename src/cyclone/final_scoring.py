@@ -25,6 +25,7 @@ from cyclone.features import build_features
 from cyclone.folds import add_fold
 from cyclone.samples import make_init_times, make_truth
 from cyclone.scoring import score
+from cyclone.sequences import build_sequences
 from cyclone.splits import TEST_LAST_SEASON, VAL_LAST_SEASON
 
 TEST_SEASONS = frozenset(range(VAL_LAST_SEASON + 1, TEST_LAST_SEASON + 1))
@@ -98,11 +99,12 @@ def score_final_models(
     *,
     confirm_test: bool = False,
 ) -> pd.DataFrame:
-    """Score all five saved final models on the seasons given.
+    """Score all seven saved final models on the seasons given.
 
     The saved models are loaded rather than fitted here, so nothing about these seasons
-    can reach them. On the development seasons this is a rehearsal only: those models have
-    seen those storms, so the errors say nothing about how good the models are.
+    can reach them. That includes the LSTM's scalers, which are saved with it. On the
+    development seasons this is a rehearsal only: those models have seen those storms, so
+    the errors say nothing about how good the models are.
 
     ``confirm_test`` has to be named in the call, so it can't be passed by accident.
 
@@ -121,7 +123,8 @@ def score_final_models(
     """
     chosen = check_seasons(seasons, confirm_test)
 
+    in_seasons = df[df["SEASON"].isin(chosen)]
     rows = rows_for_seasons(df, chosen)
     final = final_model.load_final_models(directory)
-    forecasts = final_model.final_forecasts(final, rows)
-    return score(forecasts, make_truth(df[df["SEASON"].isin(chosen)]))
+    forecasts = final_model.final_forecasts(final, rows, build_sequences(rows, in_seasons))
+    return score(forecasts, make_truth(in_seasons))

@@ -70,7 +70,7 @@ import pandas as pd
 import torch
 from torch import nn
 
-from cyclone import config, cv
+from cyclone import cv
 from cyclone.folds import FOLD_NAMES, development
 from cyclone.samples import LEAD_HOURS, with_truth_at
 from cyclone.scoring import FORECAST_COLUMNS

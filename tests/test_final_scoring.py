@@ -10,12 +10,13 @@ import pandas as pd
 import pandas.testing as tm
 import pytest
 
-from cyclone import cv, final_model, final_scoring, xgb_model
+from cyclone import cv, final_model, final_scoring, lstm_model, xgb_model
 from cyclone.baselines import CLIPER_NAME, PERSISTENCE_NAME
-from cyclone.consensus import CONSENSUS_NAME
+from cyclone.consensus import CONSENSUS_LSTM_NAME, CONSENSUS_NAME
 from cyclone.folds import FOLD_NAMES, FOLD_SEASONS, NOT_IN_A_FOLD
 from cyclone.samples import LEAD_HOURS, make_truth
 from cyclone.scoring import score, summarize
+from cyclone.sequences import build_sequences
 
 SETTINGS = {
     "max_depth": 2,
@@ -23,6 +24,13 @@ SETTINGS = {
     "min_child_weight": 1,
     "subsample": 0.6,
     "n_estimators": 5,
+}
+LSTM_SETTINGS = {
+    "hidden_size": 4,
+    "num_layers": 1,
+    "dropout": 0.0,
+    "learning_rate": 0.01,
+    "weight_decay": 0.0,
 }
 
 DEVELOPMENT_SEASONS = range(FOLD_SEASONS[0][0], FOLD_SEASONS[-1][1] + 1)
@@ -32,17 +40,21 @@ ALL_MODELS = {
     CLIPER_NAME,
     xgb_model.MODEL_NAME,
     xgb_model.RESIDUAL_NAME,
+    lstm_model.MODEL_NAME,
     CONSENSUS_NAME,
+    CONSENSUS_LSTM_NAME,
 }
 
 
 @pytest.fixture(scope="module")
-def saved(rows, truth, tmp_path_factory):
-    """Fit the final models and save them, as notebook 04 does."""
+def saved(rows, truth, table, tmp_path_factory):
+    """Fit the final models and save them, as notebook 05 does."""
     directory = tmp_path_factory.mktemp("final")
-    final = final_model.fit_final_models(rows, truth, SETTINGS, SETTINGS, "cpu")
+    final = final_model.fit_final_models(
+        rows, truth, build_sequences(rows, table), SETTINGS, SETTINGS, LSTM_SETTINGS, "cpu", "cpu"
+    )
     search = pd.DataFrame([SETTINGS])
-    final_model.save_final_models(final, search, search, directory)
+    final_model.save_final_models(final, search, search, pd.DataFrame([LSTM_SETTINGS]), directory)
     return directory
 
 
@@ -86,7 +98,8 @@ def test_scoring_gives_what_scoring_the_saved_models_directly_gives(table, rows,
     scored = final_scoring.score_final_models(table, DEVELOPMENT_SEASONS, saved)
 
     final = final_model.load_final_models(saved)
-    expected = score(final_model.final_forecasts(final, rows), make_truth(table))
+    forecasts = final_model.final_forecasts(final, rows, build_sequences(rows, table))
+    expected = score(forecasts, make_truth(table))
     tm.assert_frame_equal(scored, expected)
     assert set(scored["model"]) == ALL_MODELS
 
@@ -111,7 +124,20 @@ def test_scoring_uses_the_saved_models_and_fits_nothing(table, saved, monkeypatc
 
     monkeypatch.setattr(xgb_model, "fit_fixed", refuse)
     monkeypatch.setattr(final_model, "fit_cliper_on", refuse)
+    monkeypatch.setattr(lstm_model, "fit_lstm", refuse)
+    monkeypatch.setattr(lstm_model, "fit_scaler", refuse)
     final_scoring.score_final_models(table, LAST_BLOCK, saved)
+
+
+def test_the_lstm_reads_only_the_seasons_being_scored_up_to_each_start_time(table, saved):
+    # Storms from other seasons have no way to reach the LSTM or anything else.
+    corrupted = table.copy()
+    other_seasons = ~corrupted["SEASON"].isin(LAST_BLOCK)
+    corrupted.loc[other_seasons, ["USA_LAT", "USA_LON"]] += 30.0
+    tm.assert_frame_equal(
+        final_scoring.score_final_models(table, LAST_BLOCK, saved),
+        final_scoring.score_final_models(corrupted, LAST_BLOCK, saved),
+    )
 
 
 def test_scoring_stops_if_the_models_are_missing(table, tmp_path):
