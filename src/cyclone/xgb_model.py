@@ -45,7 +45,7 @@ from cyclone.baselines import fit_cliper_on, predict_cliper
 from cyclone.features import FEATURE_COLUMNS
 from cyclone.folds import development
 from cyclone.samples import LEAD_HOURS, with_truth_at
-from cyclone.scoring import FORECAST_COLUMNS, great_circle_km, score
+from cyclone.scoring import FORECAST_COLUMNS, great_circle_km
 
 MODEL_NAME = "xgboost"
 RESIDUAL_NAME = "xgb_residual"
@@ -443,17 +443,9 @@ def search(
         results.append({**settings, **{f"km_{lead_h}h": km for lead_h, km in errors.items()}})
         print(f"  {number + 1:>2} of {N_COMBINATIONS}: {settings}")
 
-    table = _with_relative_error(pd.DataFrame(results))
+    table = cv.with_relative_error(pd.DataFrame(results))
     best = table["relative_error"].idxmin()
     return attempts[best], table.sort_values("relative_error").reset_index(drop=True)
-
-
-def _with_relative_error(table: pd.DataFrame) -> pd.DataFrame:
-    """Add each combination's error relative to the best at each lead, averaged over leads."""
-    error_columns = [f"km_{lead_h}h" for lead_h in LEAD_HOURS]
-    return table.assign(
-        relative_error=(table[error_columns] / table[error_columns].min()).mean(axis=1)
-    )
 
 
 def search_cv(
@@ -466,19 +458,11 @@ def search_cv(
 ) -> pd.DataFrame:
     """Try each combination under cross-validation and rank them, best first.
 
-    Each combination forecasts every development start time out of fold, and is judged
-    on the mean error over all those cases. So every case counts once, and the score is
-    the same one models are compared on later. The relative-error rule is the same as in
-    ``search``: 5% worse at 24 h counts the same as 5% worse at 72 h.
+    ``cv.search_settings`` does the work, and says how combinations are judged and saved.
 
     This is much harder to fool than one validation split, since the winner has to do
     well across all the storms rather than 27 of them. It still isn't free: the winner
     is partly the luckiest of 20, so its score leans slightly optimistic.
-
-    A search takes minutes on a CPU, so with ``checkpoint`` set, the results so far are
-    written after every combination, and a dropped session loses one combination at
-    most. Resuming has to be asked for. If it happened by itself, rerunning after a
-    change to the data or inputs would quietly reuse old results.
 
     Args:
         rows: the table from ``cv.model_rows``.
@@ -493,29 +477,14 @@ def search_cv(
     """
     device = device or pick_device()
     print(f"Searching {N_COMBINATIONS} combinations on {device}, 5 folds each")
-
-    checkpoint = Path(checkpoint) if checkpoint else None
-    if checkpoint:
-        checkpoint.parent.mkdir(parents=True, exist_ok=True)
-
-    results = []
-    if resume and checkpoint and checkpoint.exists():
-        results = pd.read_csv(checkpoint).to_dict("records")
-        print(f"  Resuming: {len(results)} combinations already done")
-    finished = [{name: row[name] for name in CV_SEARCH_SPACE} for row in results]
-
-    for number, settings in enumerate(sample_cv_settings()):
-        if settings in finished:
-            continue
-        forecasts = cv.out_of_fold(rows, truth, make_forecaster(settings, device))
-        errors = score(forecasts, truth, report=False).groupby("lead_h")["error_km"].mean()
-        results.append({**settings, **{f"km_{lead_h}h": errors[lead_h] for lead_h in LEAD_HOURS}})
-        if checkpoint:
-            pd.DataFrame(results).to_csv(checkpoint, index=False)
-        print(f"  {number + 1:>2} of {N_COMBINATIONS}: {settings}")
-
-    table = _with_relative_error(pd.DataFrame(results))
-    return table.sort_values("relative_error").reset_index(drop=True)
+    return cv.search_settings(
+        rows,
+        truth,
+        lambda settings: make_forecaster(settings, device),
+        sample_cv_settings(),
+        checkpoint,
+        resume,
+    )
 
 
 def fit_final(

@@ -9,18 +9,23 @@ Any model can run here, as long as it comes as one function:
 
     forecaster(learning, learning_truth, held_out) -> forecasts
 
+``search_settings`` uses that runner to choose one model's settings, the same way for
+every model that has any.
+
 The rest of this file measures uncertainty. A skill score is one number from one set of
 storms, and a different set would have given a different number. These functions show
 how different, and all of them work from the table scoring.score returns.
 """
 
 from collections.abc import Callable
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
 from cyclone.folds import FOLD_NAMES, add_fold, development
-from cyclone.scoring import CASE_COLUMNS, homogeneous_cases
+from cyclone.samples import LEAD_HOURS
+from cyclone.scoring import CASE_COLUMNS, homogeneous_cases, score
 
 # Enough that repeating the bootstrap with a new seed moves the interval by much less
 # than the precision it's reported at.
@@ -102,6 +107,76 @@ def out_of_fold(rows: pd.DataFrame, truth: pd.DataFrame, forecaster: Forecaster)
         learning_truth = truth[truth["SID"].isin(learning["SID"])]
         forecasts.append(forecaster(learning, learning_truth, held_out).assign(fold=fold))
     return pd.concat(forecasts, ignore_index=True)
+
+
+def with_relative_error(table: pd.DataFrame) -> pd.DataFrame:
+    """Add each combination's error relative to the best at each lead, averaged over leads.
+
+    Each lead's error is divided by the best any combination reached there. Otherwise
+    the large 72 h errors would decide everything: this way, 5% worse at 24 h counts the
+    same as 5% worse at 72 h.
+    """
+    error_columns = [f"km_{lead_h}h" for lead_h in LEAD_HOURS]
+    return table.assign(
+        relative_error=(table[error_columns] / table[error_columns].min()).mean(axis=1)
+    )
+
+
+def search_settings(
+    rows: pd.DataFrame,
+    truth: pd.DataFrame,
+    make_forecaster: Callable[[dict], Forecaster],
+    combinations: list[dict],
+    checkpoint: str | Path | None = None,
+    resume: bool = False,
+) -> pd.DataFrame:
+    """Try each combination of a model's settings under cross-validation, best first.
+
+    Each combination forecasts every development start time out of fold, and is judged
+    on the mean error over all those cases, using ``with_relative_error``. So every case
+    counts once, and the score is the same one models are compared on later.
+
+    With ``checkpoint`` set, the results so far are written after every combination, so a
+    dropped session loses one combination at most. The file is replaced in one step, so
+    a laptop closing halfway through a write can't leave half a file. Resuming has to be
+    asked for. If it happened by itself, rerunning after a change to the data or inputs
+    would quietly reuse old results.
+
+    Args:
+        rows: the table from ``model_rows``.
+        truth: the table from ``samples.make_truth``.
+        make_forecaster: takes one combination and returns its forecaster.
+        combinations: the settings to try, each as a dict with the same keys.
+        checkpoint: a CSV file to write progress to, in the data directory.
+        resume: skip the combinations already in the checkpoint file.
+
+    Returns:
+        Every combination tried with its error at each lead time, best first.
+    """
+    checkpoint = Path(checkpoint) if checkpoint else None
+    if checkpoint:
+        checkpoint.parent.mkdir(parents=True, exist_ok=True)
+
+    results = []
+    if resume and checkpoint and checkpoint.exists():
+        results = pd.read_csv(checkpoint).to_dict("records")
+        print(f"  Resuming: {len(results)} combinations already done")
+    finished = [{name: row[name] for name in combinations[0]} for row in results]
+
+    for number, settings in enumerate(combinations):
+        if settings in finished:
+            continue
+        forecasts = out_of_fold(rows, truth, make_forecaster(settings))
+        errors = score(forecasts, truth, report=False).groupby("lead_h")["error_km"].mean()
+        results.append({**settings, **{f"km_{lead_h}h": errors[lead_h] for lead_h in LEAD_HOURS}})
+        if checkpoint:
+            unfinished = checkpoint.with_suffix(".tmp")
+            pd.DataFrame(results).to_csv(unfinished, index=False)
+            unfinished.replace(checkpoint)
+        print(f"  {number + 1:>2} of {len(combinations)}: {settings}")
+
+    table = with_relative_error(pd.DataFrame(results))
+    return table.sort_values("relative_error").reset_index(drop=True)
 
 
 def bootstrap_skill(
