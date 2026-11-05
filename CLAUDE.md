@@ -62,7 +62,8 @@ This is Project 1 of 3, leading to benchmarking AI weather models (GraphCast, Pa
     - Candidates: xgboost, xgb_residual, consensus, lstm, consensus_lstm (the average of the CLIPER, XGBoost and LSTM
       forecast positions), then pretrained models. Persistence and CLIPER are references, not candidates: they're what
       a candidate has to beat, so they can't also be in the race. The LSTM given only 24 h of history is a check on
-      where any gain comes from, not a candidate.
+      where any gain comes from, not a candidate. Any choice of history length for the pretraining step is written into
+      this plan before that step's results exist.
     - Score: mean skill vs CLIPER across +24, +48 and +72 h (equal weight), from the 5-fold blocked cross-validation
       out-of-fold forecasts. One number leaves no room to pick a flattering lead afterwards, equal weight stops 72 h's
       larger errors from deciding everything, and out-of-fold forecasts come from models that never saw those storms.
@@ -78,8 +79,14 @@ This is Project 1 of 3, leading to benchmarking AI weather models (GraphCast, Pa
     each with its own test interval.
   - Any XGBoost member (plain, residual, or inside either consensus) and any LSTM member (plain or inside consensus_lstm)
     is the average of 5 seeds' forecasts (seeds 42–46), both when measured under cross-validation and in the final model,
-    because single-seed results varied (consensus +72 h ranged 2.1–2.4% across seeds). The settings come from the search
-    on seed 42, which isn't rerun.
+    because single-seed results varied (consensus +72 h ranged 2.1–2.4% across seeds).
+  - **Settings searches.** XGBoost's and `xgb_residual`'s settings come from the search on seed 42, which isn't rerun:
+    XGBoost's seed effect is about 0.15 of a point (3.17 to 3.31 across seeds 42–46), small next to the differences
+    between its settings. The LSTM's search averages 3 seeds' forecasts for each combination, using seeds 101–103. Those
+    are kept apart from the measurement seeds, so that luck in the search can't carry into the reported score.
+    - Why, decided on 2026-11-05 from the first, one-seed search, on development seasons only: the LSTM's score ranged
+      from −2.81 to 0.05 across seeds 42–46, a spread of 2.86 points, while its top settings were only 0.1 to 0.8% apart in
+      relative error. One seed couldn't separate them.
   - Final models are refitted on all of 1980–2017 with the settings chosen by cross-validation.
   - Test day only runs code that was tested beforehand: `final_scoring.score_final_models`, rehearsed on the development
     seasons in notebook 05. A bug that first shows up on test can't be fixed without a second look, and a bad result
